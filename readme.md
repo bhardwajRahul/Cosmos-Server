@@ -164,7 +164,7 @@ Installation is simple using Docker:
 docker run -d --network host  --privileged --name cosmos-server -h cosmos-server --restart=always -v /var/run/docker.sock:/var/run/docker.sock -v /:/mnt/host -v /var/lib/cosmos:/config azukaar/cosmos-server:latest
 ```
 
-**DO NOT USE <span style="color:red">DOCKER-COMPOSE</span>, <span style="color:red">UNRAID TEMPLATES</span>, <span style="color:red">CASAOS</span> OR <span style="color:red">PORTAINER STACKS</span> TO INSTALL COSMOS. IT WILL NOT WORK PROPERLY. JUST RUN THE `DOCKER RUN` COMMAND!**
+**DO NOT USE <span style="color:red">UNRAID TEMPLATES</span>, <span style="color:red">CASAOS</span> OR <span style="color:red">PORTAINER STACKS</span> TO INSTALL COSMOS. IT WILL NOT WORK PROPERLY. JUST RUN THE `DOCKER RUN` COMMAND!**. You can use Docker-Compose but if you are on mac or windows (so no host mode) without a domain, that will prevent Cosmos from binding ports to itself! (preventing ip:port from working properly)
 
 **IF YOU ARE USING <span style="color:red">WINDOWS</span> OR <span style="color:red">MAC OS</span> YOU CANNOT USE THE HOST MODE OF DOCKER. Please replace `--network host` with `-p 80:80 -p 443:443 -p 4242:4242/udp`**
 
