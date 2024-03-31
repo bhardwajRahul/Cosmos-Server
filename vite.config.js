@@ -11,7 +11,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/cosmos/api': {
-        target: 'https://localhost:8443',
+        // target: 'https://localhost:8443',
+        target: 'https://yann-server.com',
         secure: false,
         ws: true,
       }

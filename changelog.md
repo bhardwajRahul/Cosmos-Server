@@ -1,3 +1,7 @@
+## Version 0.15.3
+ - Add support for sysctls as array
+ - Fix temperature appearing in the disk usage widget
+
 ## Version 0.15.2
  - Fix an issue with DB creations
 
