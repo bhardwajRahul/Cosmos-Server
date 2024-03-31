@@ -136,8 +136,6 @@ Most tools currently used to self-host **not specifically designed to be secure 
 
 If you have any further questions, feel free to join our [Discord](https://discord.gg/PwMWwsrwHA)!
 
-**Disclaimer**: _Cosmos is still in early Alpha stage, please be careful when you use it. It is not (yet, at least ;p) a replacement for proper control and mindfulness of your own security._
-
 # Let's Encrypt
 
 Cosmos Server can automatically generate and renews HTTPS certificates for your applications using Let's Encrypt. It is compatible with wildcard certificates, using the DNS challenge. In order to do it, you need to add `DNSChallengeProvider` to the `HTTPConfig` in your config (or in the UI). And then add the proper API token via environment variables. To know what providers are supported and what environment variable they need, please refer to [this page](https://go-acme.github.io/lego/dns/#dns-providers).
