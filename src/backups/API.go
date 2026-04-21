@@ -384,7 +384,7 @@ func ListSnapshotsRoute(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		var outputJSON []map[string]interface{}
-		if err := json.Unmarshal([]byte(output), &outputJSON); err != nil {
+		if err := json.Unmarshal([]byte(SplitJSONObjects(output)), &outputJSON); err != nil {
 			utils.Error("ListSnapshots: Failed to parse snapshots", err)
 			utils.HTTPError(w, "Failed to parse snapshots: "+err.Error(), http.StatusInternalServerError, "BCK007")
 			return
@@ -503,7 +503,7 @@ func RestoreBackupRoute(w http.ResponseWriter, req *http.Request) {
 		}
 
 		var snapshotsArray []map[string]interface{}
-		if err := json.Unmarshal([]byte(snapshots), &snapshotsArray); err != nil {
+		if err := json.Unmarshal([]byte(SplitJSONObjects(snapshots)), &snapshotsArray); err != nil {
 			utils.Error("RestoreBackup: Failed to parse snapshots", err)
 			utils.HTTPError(w, "Failed to parse snapshots: "+err.Error(), http.StatusInternalServerError, "BCK010")
 			return
@@ -578,7 +578,7 @@ func ListSnapshotsRouteFromRepo(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		var outputJSON []map[string]interface{}
-		if err := json.Unmarshal([]byte(output), &outputJSON); err != nil {
+		if err := json.Unmarshal([]byte(SplitJSONObjects(output)), &outputJSON); err != nil {
 			utils.Error("ListSnapshots: Failed to parse snapshots", err)
 			utils.HTTPError(w, "Failed to parse snapshots: "+err.Error(), http.StatusInternalServerError, "BCK007")
 			return

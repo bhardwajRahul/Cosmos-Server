@@ -231,13 +231,10 @@ func StartNATS() {
 		utils.Debug("[NATS] Cluster IP: " + cip.String())
 	}
 
-	// if only one, abort
-	if (len(cips) == 0) {
-		utils.Warn("[NATS] No cluster IPs found, NATS server will not start")
-		utils.Debug("[NATS] Current cached devices: ")
-		for _, d := range cips {
-			utils.Debug("[NATS] Device: " + d.String())
-		}
+	// Abort if this server has no peer lighthouses — a single-node NATS cluster
+	// cannot form a JetStream quorum and every downstream op spams errors.
+	if IsConstellationStandalone() {
+		utils.Warn("[NATS] Constellation has no peer lighthouses, NATS server will not start")
 		return
 	}
 
@@ -496,6 +493,28 @@ func IsClientConnected() bool {
 	return nc.IsConnected()
 }
 
+// IsConstellationStandalone reports whether this server has no peer lighthouses
+// to cluster with over NATS. When true, all NATS-adjacent activity must be
+// skipped — a single-node NATS cluster cannot form a JetStream quorum and
+// every downstream operation spams errors.
+func IsConstellationStandalone() bool {
+	if !utils.GetMainConfig().ConstellationConfig.Enabled {
+		return true
+	}
+	myIP, err := GetCurrentDeviceIP()
+	if err != nil {
+		utils.Fatal("[NATS] Failed to get current device IP", err)
+		return false
+	}
+	cips, _ := GetClusterIPs()
+	for _, u := range cips {
+		if u.Hostname() != myIP {
+			return false
+		}
+	}
+	return true
+}
+
 func CloseNATSClient() {
 	utils.Log("Closing NATS client...")
 
@@ -517,6 +536,11 @@ func CloseNATSClient() {
 }
 
 func SendNATSMessage(topic string, payload string) (string, error) {
+	if IsConstellationStandalone() {
+		utils.Debug("[MQ] Skipping send on standalone constellation: " + topic)
+		return "", nil
+	}
+
 	if !IsClientConnected() {
 		utils.Warn("NATS client not connected")
 		err := InitNATSClient()
@@ -540,6 +564,11 @@ func SendNATSMessage(topic string, payload string) (string, error) {
 }
 
 func SendNATSMessageAllReply(topic string, payload string, timeout time.Duration, callback func(response string)) error {
+	if IsConstellationStandalone() {
+		utils.Debug("[MQ] Skipping send-all on standalone constellation: " + topic)
+		return nil
+	}
+
 	if !IsClientConnected() {
 		utils.Warn("NATS client not connected")
 		err := InitNATSClient()
@@ -578,6 +607,11 @@ func SendNATSMessageAllReply(topic string, payload string, timeout time.Duration
 }
 
 func PublishNATSMessage(topic string, payload string) error {
+	if IsConstellationStandalone() {
+		utils.Debug("[MQ] Skipping publish on standalone constellation: " + topic)
+		return nil
+	}
+
 	if !IsClientConnected() {
 		utils.Warn("NATS client not connected")
 		err := InitNATSClient()
@@ -610,6 +644,10 @@ func MasterNATSClientRouter() {
 }
 
 func PingNATSClient() bool {
+	if IsConstellationStandalone() {
+		return true
+	}
+
 	response, err := SendNATSMessage("cosmos._global_.ping", "Ping")
 	if err != nil {
 		utils.Error("[NATS] Error pinging NATS client", err)

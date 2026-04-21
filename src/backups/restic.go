@@ -266,7 +266,30 @@ func CreateRepository(repository, password string) error {
 	if !strings.Contains(output, "created restic repository") {
 		return fmt.Errorf("[Restic] failed to create repository: %s", output)
 	}
+
+	logBackupPassword("create", repository, password)
 	return nil
+}
+
+// logBackupPassword appends a human-readable entry to the backup password
+// recovery log so the user can manually recover passwords if the main
+// config ever loses them. The file is chmod 0600 and lives next to the
+// main config.
+func logBackupPassword(action, repository, password string) {
+	path := utils.CONFIGFOLDER + "backup-passwords.log"
+	line := fmt.Sprintf("%s | action=%s | repository=%s | password=%s\n",
+		time.Now().UTC().Format(time.RFC3339), action, repository, password)
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		utils.Error("[Restic] failed to open backup password log", err)
+		return
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(line); err != nil {
+		utils.Error("[Restic] failed to write backup password log", err)
+	}
 }
 
 // DeleteRepository removes a Restic repository
@@ -322,6 +345,8 @@ func EditRepositoryPassword(repository, currentPassword, newPassword string) err
 	if !strings.Contains(output, "changed password") {
 		return fmt.Errorf("[Restic] failed to change password: %s", output)
 	}
+
+	logBackupPassword("edit", repository, newPassword)
 	return nil
 }
 

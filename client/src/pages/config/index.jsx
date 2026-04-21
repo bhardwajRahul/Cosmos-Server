@@ -299,6 +299,7 @@ const ConfigManagement = () => {
           }
 
           return API.config.set(toSave).then(() => {
+            refresh();
             setOpenModal(true);
             setSaveLabel(t('global.savedConfirmation'));
             setTimeout(() => {

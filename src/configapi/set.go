@@ -86,6 +86,20 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 			request.ServerToken = config.ServerToken
 		}
 
+		// restore backup passwords. Users without PERM_CREDENTIALS_READ can never
+		// set a password — always restore from existing config. Otherwise only
+		// restore when the value is missing or masked, so the settings UI
+		// round-trip doesn't wipe it.
+		for name, b := range request.Backup.Backups {
+			shouldRestore := !canReadCredentials || b.Password == "" || b.Password == "***"
+			if shouldRestore {
+				if existing, ok := config.Backup.Backups[name]; ok && existing.Password != "" {
+					b.Password = existing.Password
+					request.Backup.Backups[name] = b
+				}
+			}
+		}
+
 		utils.SetBaseMainConfig(request)
 		
 		utils.TriggerEvent(

@@ -1,3 +1,11 @@
+## Version 0.22.10
+ - Fix some Restic warning breaking integration
+ - Remove NATS when there's only one server in Constellation
+ - Additional safe guards for Restic password
+ - Add restic password logs separated from config (backup-passwords.log)
+ - Show config backup password on UI  
+ - Ensure backup password needs CREDENTIALS authorization to view
+
 ## Version 0.22.9
  - Potentially fix Constellation HTTPS conflicts 
 

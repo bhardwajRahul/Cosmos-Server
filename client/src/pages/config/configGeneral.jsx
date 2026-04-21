@@ -6,19 +6,22 @@ import {
   Alert,
   Button,
   Grid,
+  IconButton,
   InputLabel,
   Stack,
   FormHelperText,
   TextField,
   MenuItem,
+  Tooltip,
 } from '@mui/material';
-import { WarningFilled } from '@ant-design/icons';
+import { CopyOutlined, EyeInvisibleOutlined, EyeOutlined, WarningFilled } from '@ant-design/icons';
 import { CosmosCheckbox, CosmosInputPassword, CosmosInputText } from './users/formShortcuts';
 import { LoadingButton } from '@mui/lab';
 import { useTranslation } from 'react-i18next';
 import { FilePickerButton } from '../../components/filePicker';
 import PermissionGuard from '../../components/permissionGuard';
-import { PERM_ADMIN } from '../../utils/permissions';
+import { PERM_ADMIN, PERM_CREDENTIALS_READ } from '../../utils/permissions';
+import { useClientInfos } from '../../utils/hooks';
 
 // License issuer's public key for signature verification
 const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
@@ -53,8 +56,15 @@ const verifyJWTSignature = async (token) => {
 
 const ConfigGeneral = ({ formik, config, status, isAdmin }) => {
   const { t } = useTranslation();
+  const { hasPermission } = useClientInfos();
+  const canReadCredentials = hasPermission(PERM_CREDENTIALS_READ);
   const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
   const [licenseValidation, setLicenseValidation] = React.useState({ checked: false, valid: null });
+  const [showInternalBackupPwd, setShowInternalBackupPwd] = React.useState(false);
+
+  const rawInternalBackupPassword = config?.Backup?.Backups?.['Cosmos Internal Backup']?.Password;
+  const internalBackupPasswordMasked = rawInternalBackupPassword === '***';
+  const internalBackupPassword = internalBackupPasswordMasked ? '' : rawInternalBackupPassword;
 
   return (
     <Stack spacing={3}>
@@ -175,6 +185,39 @@ const ConfigGeneral = ({ formik, config, status, isAdmin }) => {
               />
             </Stack>
           </Grid>
+
+          {isAdmin && canReadCredentials && internalBackupPassword && (
+            <Grid item xs={12}>
+              <Stack spacing={1}>
+                <InputLabel htmlFor="internal-backup-password">
+                  {t('mgmt.config.general.internalBackupPasswordLabel')}
+                </InputLabel>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <TextField
+                    id="internal-backup-password"
+                    fullWidth
+                    variant="outlined"
+                    type={showInternalBackupPwd ? 'text' : 'password'}
+                    value={internalBackupPassword}
+                    InputProps={{ readOnly: true, style: { fontFamily: 'monospace' } }}
+                  />
+                  <Tooltip title={showInternalBackupPwd ? t('global.hide') : t('global.show')}>
+                    <IconButton onClick={() => setShowInternalBackupPwd((s) => !s)}>
+                      {showInternalBackupPwd ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title={t('global.copy')}>
+                    <IconButton onClick={() => navigator.clipboard.writeText(internalBackupPassword)}>
+                      <CopyOutlined />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+                <FormHelperText>
+                  {t('mgmt.config.general.internalBackupPasswordHelper')}
+                </FormHelperText>
+              </Stack>
+            </Grid>
+          )}
         </Grid>
       </MainCard>
 

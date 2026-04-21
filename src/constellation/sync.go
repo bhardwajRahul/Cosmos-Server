@@ -310,6 +310,10 @@ func SendNewDBSyncMessage() {
 		return
 	}
 
+	if IsConstellationStandalone() {
+		return
+	}
+
 	utils.Log("Constellation: SendNewDBSyncMessage: sending sync payload")
 	
 	payload := MakeSyncPayload("")

@@ -2,8 +2,8 @@ import React from "react";
 import { useEffect, useState } from "react";
 import * as API from "../../api";
 import PrettyTableView from "../../components/tableView/prettyTableView";
-import { CloudOutlined, CloudServerOutlined, DeleteOutlined, EditOutlined, LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
-import { Checkbox, CircularProgress, ListItemIcon, ListItemText, MenuItem, Stack } from "@mui/material";
+import { CloudOutlined, CloudServerOutlined, CopyOutlined, DeleteOutlined, EditOutlined, EyeInvisibleOutlined, EyeOutlined, LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Checkbox, CircularProgress, IconButton, ListItemIcon, ListItemText, MenuItem, Stack, Tooltip } from "@mui/material";
 import { crontabToText } from "../../utils/indexs";
 import MenuButton from "../../components/MenuButton";
 import ResponsiveButton from "../../components/responseiveButton";
@@ -11,13 +11,36 @@ import { useTranslation } from "react-i18next";
 import { ConfirmModalDirect } from "../../components/confirmModal";
 import BackupDialog, { BackupDialogInternal } from "./backupDialog";
 import { useClientInfos } from "../../utils/hooks";
-import { PERM_RESOURCES } from "../../utils/permissions";
+import { PERM_RESOURCES, PERM_CREDENTIALS_READ } from "../../utils/permissions";
 import PermissionGuard from "../../components/permissionGuard";
+
+const PasswordCell = ({ password, t }) => {
+  const [shown, setShown] = useState(false);
+  if (!password) return null;
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" onClick={(e) => e.stopPropagation()}>
+      <span style={{ fontFamily: 'monospace', userSelect: 'all' }}>
+        {shown ? password : '••••••••'}
+      </span>
+      <Tooltip title={shown ? t('global.hide') : t('global.show')}>
+        <IconButton size="small" onClick={() => setShown((s) => !s)}>
+          {shown ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+        </IconButton>
+      </Tooltip>
+      <Tooltip title={t('global.copy')}>
+        <IconButton size="small" onClick={() => navigator.clipboard.writeText(password)}>
+          <CopyOutlined />
+        </IconButton>
+      </Tooltip>
+    </Stack>
+  );
+};
 
 export const Backups = ({pathFilters}) => {
   const { t } = useTranslation();
   const { hasPermission } = useClientInfos();
   const isAdmin = hasPermission(PERM_RESOURCES);
+  const canReadCredentials = hasPermission(PERM_CREDENTIALS_READ);
   const [config, setConfig] = useState(null);
   const [backups, setBackups] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -120,9 +143,15 @@ export const Backups = ({pathFilters}) => {
             field: (r) => (loading && r.Name == loading) ? '' : crontabToText(r.Crontab, t),
             underline: true,
           },
+          ...(canReadCredentials ? [{
+            title: t('mgmt.backup.passwordTitle'),
+            screenMin: 'md',
+            clickable: true,
+            field: (r) => (loading && r.Name == loading) ? '' : <PasswordCell password={r.Password === '***' ? '' : r.Password} t={t} />,
+          }] : []),
           {
             title: '',
-            clickable:true, 
+            clickable:true,
             field: (r) => {
               return <div style={{position: 'relative'}}>
                 <MenuButton>

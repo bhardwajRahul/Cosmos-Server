@@ -279,9 +279,13 @@ var heartbeatStopChan chan struct{}
 var heartbeatTicker *time.Ticker
 
 func UpdateLocalTunnelCache() {
+	if IsConstellationStandalone() {
+		return
+	}
+
 	localTunnelCacheMutex.Lock()
 	defer localTunnelCacheMutex.Unlock()
-	
+
 	currentDeviceName, err := GetCurrentDeviceName()
 	if err != nil {
 		utils.Warn("[constellation] Failed to get current device name for tunnel cache update: " + err.Error())
@@ -397,7 +401,11 @@ func GetLocalTunnelCache() []utils.ConstellationTunnel {
 	if !utils.GetMainConfig().ConstellationConfig.Enabled {
 		return []utils.ConstellationTunnel{}
 	}
-	
+
+	if IsConstellationStandalone() {
+		return []utils.ConstellationTunnel{}
+	}
+
 	isLB, err := GetCurrentDeviceIsLoadbalancer()
 	if err != nil {
 		utils.Debug("[constellation] Failed to get current device load balancer status for tunnel cache retrieval " + err.Error())

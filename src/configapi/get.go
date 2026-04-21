@@ -43,6 +43,13 @@ func ConfigApiGet(w http.ResponseWriter, req *http.Request) {
 			config.HTTPConfig.DNSChallengeConfig = map[string]string{}
 			config.Licence = "***"
 			config.ServerToken = "***"
+
+			for name, b := range config.Backup.Backups {
+				if b.Password != "" {
+					b.Password = "***"
+					config.Backup.Backups[name] = b
+				}
+			}
 		}
 
 		if !isAdmin {
