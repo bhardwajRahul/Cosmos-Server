@@ -37,4 +37,4 @@ terraform.tfstate
 terraform.tfstate.*
 .terraform.lock.hcl
 *.log
-main.tf
+./main.tf
