@@ -1,3 +1,9 @@
+## Version 0.22.35
+ - Fix "JetStream Unavailable" once and for all (hopefully :p )
+ - Fix rare race condition breaking config file
+ - Add more details to connection status on Constellation page
+ - Fix issue with DNS blocklist 
+
 ## Version 0.22.34
  - Fix bootstrap issue with NATS cluster 
 

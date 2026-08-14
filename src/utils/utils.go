@@ -13,6 +13,7 @@ import (
 	"io/ioutil"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 	"errors"
 	"path/filepath"
@@ -53,8 +54,11 @@ func JSONEquals(a, b interface{}) bool {
 var ConfigLock sync.Mutex
 var ConfigLockInternal sync.Mutex
 
-var BaseMainConfig Config
-var MainConfig Config
+// The config globals are swapped atomically: the constellation sync path
+// rewrites the config at runtime while goroutines read it concurrently, so
+// a plain global is a data race.
+var baseMainConfig atomic.Pointer[Config]
+var mainConfig atomic.Pointer[Config]
 var IsHTTPS = false
 var NewVersionAvailable = false
 
@@ -242,11 +246,11 @@ func GetRootAppId() string {
 }
 
 func GetPrivateAuthKey() string {
-	return MainConfig.HTTPConfig.AuthPrivateKey
+	return GetMainConfig().HTTPConfig.AuthPrivateKey
 }
 
 func GetPublicAuthKey() string {
-	return MainConfig.HTTPConfig.AuthPublicKey
+	return GetMainConfig().HTTPConfig.AuthPublicKey
 }
 
 var AlphaNumRunes = []rune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -325,59 +329,71 @@ func ReadConfigFromFile() Config {
 }
 
 func LoadBaseMainConfig(config Config) {
-	BaseMainConfig = config
-	MainConfig = config
+	base := config
+	baseMainConfig.Store(&base)
+
+	// build fully in a local, then publish with one atomic store
+	main := config
 
 	// use ENV to overwrite configs
 
 	if os.Getenv("COSMOS_HTTP_PORT") != "" {
-		MainConfig.HTTPConfig.HTTPPort = os.Getenv("COSMOS_HTTP_PORT")
+		main.HTTPConfig.HTTPPort = os.Getenv("COSMOS_HTTP_PORT")
 	}
 	if os.Getenv("COSMOS_HTTPS_PORT") != "" {
-		MainConfig.HTTPConfig.HTTPSPort = os.Getenv("COSMOS_HTTPS_PORT")
+		main.HTTPConfig.HTTPSPort = os.Getenv("COSMOS_HTTPS_PORT")
 	}
 	if os.Getenv("COSMOS_HOSTNAME") != "" {
-		MainConfig.HTTPConfig.Hostname = os.Getenv("COSMOS_HOSTNAME")
+		main.HTTPConfig.Hostname = os.Getenv("COSMOS_HOSTNAME")
 	}
 	if os.Getenv("COSMOS_HTTPS_MODE") != "" {
-		MainConfig.HTTPConfig.HTTPSCertificateMode = os.Getenv("COSMOS_HTTPS_MODE")
+		main.HTTPConfig.HTTPSCertificateMode = os.Getenv("COSMOS_HTTPS_MODE")
 	}
 	if os.Getenv("COSMOS_GENERATE_MISSING_AUTH_CERT") != "" {
-		MainConfig.HTTPConfig.GenerateMissingAuthCert = os.Getenv("COSMOS_GENERATE_MISSING_AUTH_CERT") == "true"
+		main.HTTPConfig.GenerateMissingAuthCert = os.Getenv("COSMOS_GENERATE_MISSING_AUTH_CERT") == "true"
 	}
 	if os.Getenv("COSMOS_TLS_CERT") != "" {
-		MainConfig.HTTPConfig.TLSCert = os.Getenv("COSMOS_TLS_CERT")
+		main.HTTPConfig.TLSCert = os.Getenv("COSMOS_TLS_CERT")
 	}
 	if os.Getenv("COSMOS_TLS_KEY") != "" {
-		MainConfig.HTTPConfig.TLSKey = os.Getenv("COSMOS_TLS_KEY")
+		main.HTTPConfig.TLSKey = os.Getenv("COSMOS_TLS_KEY")
 	}
 	if os.Getenv("COSMOS_AUTH_PRIV_KEY") != "" {
-		MainConfig.HTTPConfig.AuthPrivateKey = os.Getenv("COSMOS_AUTH_PRIVATE_KEY")
+		main.HTTPConfig.AuthPrivateKey = os.Getenv("COSMOS_AUTH_PRIVATE_KEY")
 	}
 	if os.Getenv("COSMOS_AUTH_PUBLIC_KEY") != "" {
-		MainConfig.HTTPConfig.AuthPublicKey = os.Getenv("COSMOS_AUTH_PUBLIC_KEY")
+		main.HTTPConfig.AuthPublicKey = os.Getenv("COSMOS_AUTH_PUBLIC_KEY")
 	}
 	if os.Getenv("COSMOS_LOG_LEVEL") != "" {
-		MainConfig.LoggingLevel = (LoggingLevel)(os.Getenv("COSMOS_LOG_LEVEL"))
+		main.LoggingLevel = (LoggingLevel)(os.Getenv("COSMOS_LOG_LEVEL"))
 	}
 	if os.Getenv("COSMOS_MONGODB") != "" {
-		MainConfig.MongoDB = os.Getenv("COSMOS_MONGODB")
+		main.MongoDB = os.Getenv("COSMOS_MONGODB")
 	}
 	if os.Getenv("COSMOS_SERVER_COUNTRY") != "" {
-		MainConfig.ServerCountry = os.Getenv("COSMOS_SERVER_COUNTRY")
+		main.ServerCountry = os.Getenv("COSMOS_SERVER_COUNTRY")
 	}
-	
-	if MainConfig.DockerConfig.DefaultDataPath == "" {
-		MainConfig.DockerConfig.DefaultDataPath = "/cosmos-storage"
+
+	if main.DockerConfig.DefaultDataPath == "" {
+		main.DockerConfig.DefaultDataPath = "/cosmos-storage"
 	}
+
+	mainConfig.Store(&main)
 }
 
 func GetMainConfig() Config {
-	return MainConfig
+	// nil until the first LoadBaseMainConfig — early logging reads this
+	if p := mainConfig.Load(); p != nil {
+		return *p
+	}
+	return Config{}
 }
 
 func GetBaseMainConfig() Config {
-	return BaseMainConfig
+	if p := baseMainConfig.Load(); p != nil {
+		return *p
+	}
+	return Config{}
 }
 
 func Sanitize(s string) string {
@@ -604,7 +620,7 @@ func GetAllHostnames(applyWildCard bool, removePorts bool) []string {
 	bareMainHostname, _ := publicsuffix.EffectiveTLDPlusOne(mainHostname)
 	canWildcard := canDomainWildcard(bareMainHostname) || (OverrideWildcardDomains != "")
 
-	if applyWildCard && MainConfig.HTTPConfig.UseWildcardCertificate && canWildcard {
+	if applyWildCard && GetMainConfig().HTTPConfig.UseWildcardCertificate && canWildcard {
 
 		Debug("bareMainHostname: " + bareMainHostname)
 
@@ -630,7 +646,7 @@ func GetAllHostnames(applyWildCard bool, removePorts bool) []string {
 		tempUniqueHostnames := append(wildcards, filterHostnamesByWildcard(othersHostname, wildcards)...)
 
 		// hardcode wildcard for local domains
-		// if(MainConfig.HTTPConfig.HTTPSCertificateMode == HTTPSCertModeList["SELFSIGNED"]) {
+		// if(GetMainConfig().HTTPConfig.HTTPSCertificateMode == HTTPSCertModeList["SELFSIGNED"]) {
 		// 	for _, hostname := range tempUniqueHostnames {
 		// 		if strings.HasSuffix(hostname, ".local") {
 		// 			tempUniqueHostnames = append(tempUniqueHostnames, "*.local")
@@ -715,14 +731,14 @@ func GetServerURL(overwriteHostname string) string {
 	if overwriteHostname != "" {
 		ServerURL += overwriteHostname
 	} else {
-		ServerURL += MainConfig.HTTPConfig.Hostname
+		ServerURL += GetMainConfig().HTTPConfig.Hostname
 	}
 	
-	if IsHTTPS && MainConfig.HTTPConfig.HTTPSPort != "443" {
-		ServerURL += ":" + MainConfig.HTTPConfig.HTTPSPort
+	if IsHTTPS && GetMainConfig().HTTPConfig.HTTPSPort != "443" {
+		ServerURL += ":" + GetMainConfig().HTTPConfig.HTTPSPort
 	}
-	if !IsHTTPS && MainConfig.HTTPConfig.HTTPPort != "80" {
-		ServerURL += ":" + MainConfig.HTTPConfig.HTTPPort
+	if !IsHTTPS && GetMainConfig().HTTPConfig.HTTPPort != "80" {
+		ServerURL += ":" + GetMainConfig().HTTPConfig.HTTPPort
 	}
 
 	return ServerURL + "/"
@@ -732,13 +748,13 @@ func GetServerRawAccess() (string, string, string) {
 	Hostname := ""
 	Port := ""
 
-	Hostname = MainConfig.HTTPConfig.Hostname
+	Hostname = GetMainConfig().HTTPConfig.Hostname
 	
-	if IsHTTPS && MainConfig.HTTPConfig.HTTPSPort != "443" {
-		Port = MainConfig.HTTPConfig.HTTPSPort
+	if IsHTTPS && GetMainConfig().HTTPConfig.HTTPSPort != "443" {
+		Port = GetMainConfig().HTTPConfig.HTTPSPort
 	}
-	if !IsHTTPS && MainConfig.HTTPConfig.HTTPPort != "80" {
-		Port = MainConfig.HTTPConfig.HTTPPort
+	if !IsHTTPS && GetMainConfig().HTTPConfig.HTTPPort != "80" {
+		Port = GetMainConfig().HTTPConfig.HTTPPort
 	}
 
 	protocol := "http://"
@@ -751,9 +767,9 @@ func GetServerRawAccess() (string, string, string) {
 
 func GetServerPort() string {
 	if IsHTTPS {
-		return MainConfig.HTTPConfig.HTTPSPort
+		return GetMainConfig().HTTPConfig.HTTPSPort
 	}
-	return MainConfig.HTTPConfig.HTTPPort
+	return GetMainConfig().HTTPConfig.HTTPPort
 }
 
 func Base64Encode(str string) string {

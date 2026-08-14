@@ -2061,7 +2061,7 @@ info:
   contact: {}
   description: REST API for Cosmos Cloud server management
   title: Cosmos Server API
-  version: 0.22.34
+  version: 0.22.35
 paths:
   /_logs:
     get:
@@ -3736,6 +3736,26 @@ paths:
       security:
       - BearerAuth: []
       summary: Get Nebula VPN service logs
+      tags:
+      - constellation
+  /api/constellation/nats-status:
+    get:
+      description: Declared topology (role, HA mode), live NATS server/client/JetStream/KV
+        state, connection counts and known managers.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/utils.APIResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/utils.HTTPErrorResult'
+      security:
+      - BearerAuth: []
+      summary: Detailed NATS/JetStream status for debugging
       tags:
       - constellation
   /api/constellation/nodes/{name}/unbroke:

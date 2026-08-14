@@ -52,9 +52,11 @@ func setupTestEnv(t *testing.T, mutate func(*utils.Config)) string {
 }
 
 func resetConstellationGlobals() {
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
 	CachedDevices = map[string]utils.ConstellationDevice{}
 	CachedDeviceNames = map[string]string{}
+	deviceCacheMux.Unlock()
 	NebulaStarted = false
 	NebulaHasStarted = false
 	NATSStarted = false
@@ -80,7 +82,9 @@ func writeNebulaYML(t *testing.T, fields map[string]interface{}) {
 	if err := os.WriteFile(utils.CONFIGFOLDER+"nebula.yml", data, 0600); err != nil {
 		t.Fatal("testenv: write nebula.yml:", err)
 	}
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
+	deviceCacheMux.Unlock()
 }
 
 // chdirWithCertBinary moves CWD to a temp dir containing symlinks to the

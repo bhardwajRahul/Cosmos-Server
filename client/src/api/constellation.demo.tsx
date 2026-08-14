@@ -138,6 +138,28 @@ function pingDevice() {
   });
 }
 
+function natsStatus() {
+  return new Promise((resolve, reject) => {
+    resolve({
+      "status": "ok",
+      "data": {
+        "role": "manager",
+        "haMode": false,
+        "nebulaStarted": true,
+        "serverRunning": true,
+        "clientConnected": true,
+        "jetstreamMode": "standalone",
+        "jetstreamReady": true,
+        "kvNodesReady": true,
+        "knownManagers": [],
+        "connectedClients": 1,
+        "connectedLeafs": 2,
+        "clusterRoutes": 0
+      }
+    })
+  });
+}
+
 function tunnels() {
   return new Promise((resolve, reject) => {
     resolve({
@@ -167,6 +189,7 @@ export {
   connect,
   block,
   ping,
+  natsStatus,
   pingDevice,
   tunnels
 };

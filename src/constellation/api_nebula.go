@@ -179,6 +179,32 @@ func API_GetLogs(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+// API_NATSStatus godoc
+// @Summary Detailed NATS/JetStream status for debugging
+// @Description Declared topology (role, HA mode), live NATS server/client/JetStream/KV state, connection counts and known managers.
+// @Tags constellation
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} utils.APIResponse
+// @Failure 403 {object} utils.HTTPErrorResult
+// @Router /api/constellation/nats-status [get]
+func API_NATSStatus(w http.ResponseWriter, req *http.Request) {
+	if utils.CheckPermissions(w, req, utils.PERM_ADMIN) != nil {
+		return
+	}
+
+	if req.Method == "GET" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "OK",
+			"data":   GetNATSStatus(),
+		})
+	} else {
+		utils.Error("API_NATSStatus: Method not allowed"+req.Method, nil)
+		utils.HTTPError(w, "Method not allowed", http.StatusMethodNotAllowed, "HTTP001")
+		return
+	}
+}
+
 // API_Ping godoc
 // @Summary Check if the NATS client connection is alive
 // @Tags constellation

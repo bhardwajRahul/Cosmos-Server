@@ -4,7 +4,7 @@
         "description": "REST API for Cosmos Cloud server management",
         "title": "Cosmos Server API",
         "contact": {},
-        "version": "0.22.34"
+        "version": "0.22.35"
     },
     "basePath": "/cosmos",
     "paths": {
@@ -2628,6 +2628,37 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/utils.HTTPErrorResult"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/constellation/nats-status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Declared topology (role, HA mode), live NATS server/client/JetStream/KV state, connection counts and known managers.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "constellation"
+                ],
+                "summary": "Detailed NATS/JetStream status for debugging",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/utils.APIResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
                         "schema": {
                             "$ref": "#/definitions/utils.HTTPErrorResult"
                         }

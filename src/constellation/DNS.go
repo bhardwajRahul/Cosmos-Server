@@ -31,6 +31,21 @@ func matchesDomain(qName string, hostname string) bool {
 	return qName == hostname + "." || strings.HasSuffix(qName, "." + hostname + ".")
 }
 
+// isBlacklisted reports whether domain or any of its parent domains is in DNSBlacklist,
+// so a blacklisted "example.com" also blocks "ads.example.com"
+func isBlacklisted(domain string) bool {
+	for {
+		if DNSBlacklist[domain] {
+			return true
+		}
+		idx := strings.Index(domain, ".")
+		if idx == -1 {
+			return false
+		}
+		domain = domain[idx+1:]
+	}
+}
+
 func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Question) == 0 {
 		m := new(dns.Msg)
@@ -106,7 +121,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 						if target.DeviceName == currentName {
 							continue
 						}
-						destination := CachedDeviceNames[target.DeviceName]
+						destination := GetDeviceIp(target.DeviceName)
 						if destination != "" {
 							if matchesDomain(q.Name, tunnel.Route.Host) && q.Qtype == dns.TypeA {
 								utils.Debug("DNS Overwrite " + tunnel.Route.Host + " with " + destination)
@@ -123,9 +138,10 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	
 	if !customHandled {
 		// Overwrite Constellation devices with Constellation IP
+		_, cachedNames := deviceCacheSnapshot()
 		for _, q := range r.Question {
 			utils.Debug("DNS Question " + q.Name)
-			for deviceName, ip := range CachedDeviceNames {
+			for deviceName, ip := range cachedNames {
 				procDeviceName := strings.ReplaceAll(deviceName, " ", "-")
 				
 				if matchesDomain(q.Name, procDeviceName) && q.Qtype == dns.TypeA {
@@ -142,7 +158,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		// Block blacklisted domains
 		for _, q := range r.Question {
 			noDot := strings.TrimSuffix(q.Name, ".")
-			if DNSBlacklist[noDot] {
+			if isBlacklisted(noDot) {
 				if q.Qtype == dns.TypeA {
 					utils.Debug("DNS Block " + noDot)
 					rr, _ := dns.NewRR(q.Name + " A 0.0.0.0")

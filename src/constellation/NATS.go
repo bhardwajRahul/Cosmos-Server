@@ -8,9 +8,12 @@ import (
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
@@ -98,7 +101,8 @@ func GetClusterIPs() ([]*url.URL, error) {
 	// read IPs from cached devices — any device running its own NATS server
 	// (CosmosNode > 0), not just the Nebula lighthouse: a Manager/Agent peer
 	// that isn't the Nebula lighthouse would otherwise never be routed to.
-	for _, device := range CachedDevices {
+	cachedDevices, _ := deviceCacheSnapshot()
+	for _, device := range cachedDevices {
 		if device.CosmosNode > 0 {
 			ipsMap[device.IP] = true
 		}
@@ -117,6 +121,80 @@ func GetClusterIPs() ([]*url.URL, error) {
 	}
 
 	return ips, nil
+}
+
+// natsLeafPort is the port managers listen on for agent leafnode connections.
+const natsLeafPort = 7422
+
+// readCstlnConfigField returns a cstln_* field from this node's nebula.yml;
+// the creator's own nebula.yml lacks these (its values live in the main config).
+func readCstlnConfigField(key string) interface{} {
+	nebulaFile, err := ioutil.ReadFile(utils.CONFIGFOLDER + "nebula.yml")
+	if err != nil {
+		return nil
+	}
+	configMap := make(map[string]interface{})
+	if yaml.Unmarshal(nebulaFile, &configMap) != nil {
+		return nil
+	}
+	return configMap[key]
+}
+
+// IsNATSHA reports whether this constellation was created with the HA
+// (clustered JetStream) option. Immutable: read from the creator's main
+// config (NATSReplicas >= 3) or from this node's device config (cstln_nats_ha).
+func IsNATSHA() bool {
+	if utils.GetMainConfig().ConstellationConfig.NATSReplicas >= 3 {
+		return true
+	}
+	if ha, ok := readCstlnConfigField("cstln_nats_ha").(bool); ok {
+		return ha
+	}
+	return false
+}
+
+// getSeedManagerIPs returns the manager IPs written into this node's device
+// config at enrollment (cstln_nats_managers); used only as bootstrap dial hints.
+func getSeedManagerIPs() []string {
+	seeds := []string{}
+	if list, ok := readCstlnConfigField("cstln_nats_managers").([]interface{}); ok {
+		for _, v := range list {
+			if s, ok := v.(string); ok && s != "" {
+				seeds = append(seeds, cleanIp(s))
+			}
+		}
+	}
+	return seeds
+}
+
+// getManagerIPs returns the nebula IPs of every known Manager node
+// (CosmosNode == 2), excluding excludeIP: device cache ∪ enrollment seeds,
+// falling back to the nebula lighthouses when both are empty.
+func getManagerIPs(excludeIP string) []string {
+	ipsMap := map[string]bool{}
+	cachedDevices, _ := deviceCacheSnapshot()
+	for _, d := range cachedDevices {
+		if d.CosmosNode == 2 && d.IP != "" {
+			ipsMap[cleanIp(d.IP)] = true
+		}
+	}
+	for _, ip := range getSeedManagerIPs() {
+		ipsMap[ip] = true
+	}
+	if len(ipsMap) == 0 {
+		lips, _ := GetAllLighthouseIPFromTempConfig()
+		for _, ip := range lips {
+			ipsMap[cleanIp(ip)] = true
+		}
+	}
+	delete(ipsMap, cleanIp(excludeIP))
+
+	ips := make([]string, 0, len(ipsMap))
+	for ip := range ipsMap {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	return ips
 }
 
 func GetNATSCredentials() (string, string, error) {
@@ -184,6 +262,8 @@ func StartNATS() {
 		return
 	}
 
+	natsStartTime = time.Now()
+
 	ip, err := GetCurrentDeviceIP()
 	if err != nil {
 		utils.Error("[NATS] Failed to get current device IP", err)
@@ -229,10 +309,18 @@ func StartNATS() {
 	// Make users
 
 	users := []*server.User{}
+	// The cache indexes a device under its name AND every public hostname;
+	// leafnode auth rejects duplicate users, which kills the server start.
+	seenUsers := map[string]bool{}
 
-	for _, devices := range CachedDevices {
-		utils.Debug("[NATS] Adding NATS user for device: " + devices.DeviceName + " With API Key: " + redactSecret(devices.APIKey))
+	cachedDevices, _ := deviceCacheSnapshot()
+	for _, devices := range cachedDevices {
 		username := sanitizeNATSUsername(devices.DeviceName)
+		if seenUsers[username] {
+			continue
+		}
+		seenUsers[username] = true
+		utils.Debug("[NATS] Adding NATS user for device: " + devices.DeviceName + " With API Key: " + redactSecret(devices.APIKey))
 
 		// TODO: Agent / users with less permissions
 
@@ -290,27 +378,13 @@ func StartNATS() {
 		natsHost = "0.0.0.0"
 	}
 
-	standalone := IsConstellationStandalone()
-
-	cips, err := GetClusterIPs()
-	if err != nil && !standalone {
-		utils.Error("[NATS] Failed to get cluster IPs", err)
-	}
-
-	utils.Debug("[NATS] Cluster IPs: ")
-	for _, cip := range cips {
-		utils.Debug("[NATS] Cluster IP: " + cip.String())
-	}
-
-	// Agents never run their own JetStream: a JetStream Raft group needs a
-	// majority to make progress, and with exactly 2 nodes that majority is
-	// both of them — worse availability than a single node, since either one
-	// going down stalls it. Agents instead just cluster (core NATS routing)
-	// and reach the Manager's JetStream transparently over that route (JS
-	// API subjects are exported via the system account and proxy across
-	// cluster connections), so cluster_size stays 1 regardless of how many
-	// Agents join.
+	// Topology is declared, never inferred: IsNATSHA says whether a JS
+	// cluster exists; managers (CosmosNode == 2) are the only cluster
+	// members, agents attach as leafnodes. nats-server sizes and persists
+	// the JS meta-Raft group from the initial route list, so routes must
+	// never point at non-voters.
 	isAgent := utils.FBL.AgentMode
+	haMode := IsNATSHA()
 
 	opts := &server.Options{
 		Host: natsHost,
@@ -321,6 +395,11 @@ func StartNATS() {
 		JetStream: !isAgent,
 		StoreDir:  utils.CONFIGFOLDER + "/jetstream",
 
+		// Lets agents reach the manager's JetStream over leafnodes: nats-server
+		// otherwise denies $JS.API.> across account leaf links. Enforced
+		// per-server, so BOTH manager and agents need it.
+		JsAccDefaultDomain: map[string]string{"$G": ""},
+
 		TLSConfig: &tls.Config{
 			Certificates:       []tls.Certificate{cert},
 			ClientAuth:         tls.NoClientCert,
@@ -330,41 +409,95 @@ func StartNATS() {
 		Users: users,
 	}
 
-	// Always open the cluster listener so a peer that already knows about us
-	// (e.g. via its own nebula lighthouse.hosts) can connect in, even before
-	// we know of anyone ourselves.
-	//
-	// nats-server refuses to start JetStream at all if Cluster is configured
-	// with zero configured Routes and no leafnode ("JetStream cluster
-	// requires configured routes or solicited leafnode for the system
-	// account") — that check is static (just len(opts.Routes) > 0), it does
-	// not require a route to actually be connected. So when standalone, we
-	// list our own cluster address as the sole route: nats-server always
-	// excludes self-addressed routes from actual connection attempts
-	// (route.go's routesToSelf/excludedAddresses), so this never dials
-	// anything — it only satisfies the startup check while we wait to
-	// accept a real incoming route.
-	opts.Cluster = server.ClusterOpts{
-		Name: "Constellation",
-		Host: device.IP,
-		Port: 6222,
-		TLSConfig: &tls.Config{
-			Certificates:       []tls.Certificate{cert},
-			ClientAuth:         tls.NoClientCert,
-			InsecureSkipVerify: true,
-		},
-	}
-
-	if standalone {
-		utils.Log("[NATS] Constellation has no known peers yet, listening for cluster routes without dialing out")
-		selfRoute, err := url.Parse("nats-route://" + device.IP + ":6222")
-		if err != nil {
-			utils.Error("[NATS] Failed to build self route", err)
+	if isAgent {
+		// Agent: solicit leafnode connections to every known manager; only
+		// affects failover redundancy — one reachable manager is enough.
+		user, pwd, errCreds := GetNATSCredentials()
+		if errCreds != nil {
+			utils.Error("[NATS] Failed to get credentials for leafnode connection", errCreds)
 			return
 		}
-		opts.Routes = []*url.URL{selfRoute}
+
+		managerIPs := getManagerIPs(device.IP)
+		if len(managerIPs) == 0 {
+			utils.Warn("[NATS] Agent knows no managers yet, NATS will stay isolated until the device DB syncs")
+		}
+
+		leafURLs := []*url.URL{}
+		for _, mip := range managerIPs {
+			leafURLs = append(leafURLs, &url.URL{
+				Scheme: "nats-leaf",
+				User:   url.UserPassword(sanitizeNATSUsername(user), pwd),
+				Host:   mip + ":" + strconv.Itoa(natsLeafPort),
+			})
+		}
+
+		opts.LeafNode = server.LeafNodeOpts{
+			Remotes: []*server.RemoteLeafOpts{{
+				URLs: leafURLs,
+				TLS:  true,
+				TLSConfig: &tls.Config{
+					InsecureSkipVerify: true,
+				},
+			}},
+		}
 	} else {
-		opts.Routes = cips
+		// Manager: accept agents as leafnodes, same credentials as clients.
+		leafUsers := make([]*server.User, 0, len(users))
+		for _, u := range users {
+			leafUsers = append(leafUsers, &server.User{Username: u.Username, Password: u.Password})
+		}
+
+		opts.LeafNode = server.LeafNodeOpts{
+			Host:        natsHost,
+			Port:        natsLeafPort,
+			NoAdvertise: true,
+			TLSConfig: &tls.Config{
+				Certificates:       []tls.Certificate{cert},
+				ClientAuth:         tls.NoClientCert,
+				InsecureSkipVerify: true,
+			},
+			Users: leafUsers,
+		}
+
+		if haMode {
+			// HA: clustered JetStream among managers ONLY. Routes are just
+			// dial hints — gossip meshes the rest.
+			opts.Cluster = server.ClusterOpts{
+				Name: "Constellation",
+				Host: device.IP,
+				Port: 6222,
+				TLSConfig: &tls.Config{
+					Certificates:       []tls.Certificate{cert},
+					ClientAuth:         tls.NoClientCert,
+					InsecureSkipVerify: true,
+				},
+			}
+
+			routes := []*url.URL{}
+			for _, mip := range getManagerIPs(device.IP) {
+				if r, errR := url.Parse("nats-route://" + mip + ":6222"); errR == nil {
+					routes = append(routes, r)
+				}
+			}
+			if len(routes) == 0 {
+				// nats-server refuses clustered JS with zero configured routes;
+				// a self-route is never dialed, it only passes that check. JS
+				// stays down until a second manager enrolls — formation, not failure.
+				selfRoute, errR := url.Parse("nats-route://" + device.IP + ":6222")
+				if errR != nil {
+					utils.Error("[NATS] Failed to build self route", errR)
+					return
+				}
+				routes = []*url.URL{selfRoute}
+				utils.Log("[NATS] HA cluster forming: JetStream waits for a second manager to enroll before it can elect a leader")
+			}
+			opts.Routes = routes
+		} else {
+			// Clear clustered meta state ($SYS raft groups) left by older
+			// versions so it cannot confuse a non-clustered start.
+			os.RemoveAll(utils.CONFIGFOLDER + "/jetstream/$SYS")
+		}
 	}
 
 	// Create and start the embedded NATS server
@@ -422,8 +555,38 @@ func StartNATS() {
 	NATSStarted = true
 
 	utils.Log("[NATS] Started NATS server on host " + opts.Host + ":" + strconv.Itoa(opts.Port))
-	InitNATSClient()
+
+	// Retry client init with capped backoff for as long as our server is up —
+	// InitNATSClient's own retries are bounded, so a slow nebula bring-up
+	// would otherwise strand the process with a server but no client.
+	go func() {
+		if !atomic.CompareAndSwapInt32(&natsInitSupervisorRunning, 0, 1) {
+			return
+		}
+		defer atomic.StoreInt32(&natsInitSupervisorRunning, 0)
+
+		backoff := 2 * time.Second
+		for NATSStarted {
+			if err := InitNATSClient(); err == nil {
+				return
+			}
+			time.Sleep(backoff)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}()
 }
+
+// natsInitSupervisorRunning keeps repeated StartNATS calls (constellation
+// restarts) from stacking retry goroutines.
+var natsInitSupervisorRunning int32
+
+// natsStartTime marks the last constellation NATS bring-up; within
+// natsStartGracePeriod the UI reports failing steps as still starting.
+var natsStartTime time.Time
+
+const natsStartGracePeriod = 2 * time.Minute
 
 func StopNATS() {
 	utils.Log("[NATS] Stopping NATS server...")
@@ -453,6 +616,10 @@ func connectNATSClient(url string, user string, pwd string) (*nats.Conn, error) 
 		// timeout
 		nats.Timeout(2*time.Second),
 
+		// the default (60) gives up permanently after ~2min of server
+		// downtime, stranding the process until a full restart
+		nats.MaxReconnects(-1),
+
 		nats.NoEcho(),
 	)
 }
@@ -467,7 +634,8 @@ func InitNATSClient() error {
 	defer clientConfigLock.Unlock()
 
 	if nc != nil {
-		return errors.New("NATS client already initialized")
+		// already connected — success for callers using this as "ensure client"
+		return nil
 	}
 
 	var err error
@@ -591,6 +759,12 @@ func ClientConnectToJS() error {
 		return fmt.Errorf("error getting JetStream context: %w", err)
 	}
 
+	// nc.JetStream only builds a local context — a real round-trip is needed
+	// so a nil error means "JS reachable".
+	if _, err := js.AccountInfo(); err != nil {
+		return fmt.Errorf("JetStream API not reachable: %w", err)
+	}
+
 	lastCheck = time.Now()
 	return nil
 }
@@ -620,7 +794,8 @@ func IsConstellationStandalone() bool {
 		utils.Error("[NATS] Failed to get current device IP", err)
 		return true
 	}
-	for _, device := range CachedDevices {
+	cachedDevices, _ := deviceCacheSnapshot()
+	for _, device := range cachedDevices {
 		if device.IP == myIP {
 			continue
 		}
@@ -638,6 +813,93 @@ func IsConstellationStandalone() bool {
 		}
 	}
 	return true
+}
+
+// NATSStatus is a debugging snapshot of this node's declared topology and
+// the live state of the embedded NATS stack.
+type NATSStatus struct {
+	// declared topology
+	Role   string `json:"role"`   // "manager" | "agent"
+	HAMode bool   `json:"haMode"` // clustered JetStream constellation
+
+	// live state
+	NebulaStarted   bool `json:"nebulaStarted"`
+	ServerRunning   bool `json:"serverRunning"`
+	ClientConnected bool `json:"clientConnected"`
+
+	// Starting: within the post-start grace period — failing steps are
+	// likely still coming up rather than broken
+	Starting bool `json:"starting"`
+
+	// "disabled" (agents, proxied to managers) | "standalone" | "clustered"
+	JetStreamMode  string `json:"jetstreamMode"`
+	JetStreamReady bool   `json:"jetstreamReady"` // JS API answers
+	KVNodesReady   bool   `json:"kvNodesReady"`   // constellation-nodes bucket reachable
+
+	KnownManagers []string `json:"knownManagers"`
+
+	// connection counts from the embedded server
+	ConnectedClients int `json:"connectedClients"`
+	ConnectedLeafs   int `json:"connectedLeafs"` // manager: attached agents; agent: 1 when attached to a manager
+	ClusterRoutes    int `json:"clusterRoutes"`  // HA managers: connected manager routes
+
+	// ManagerLinkUp: can this node reach a manager's NATS — matters on
+	// agents, whose local client is always connected to its own server.
+	ManagerLinkUp bool `json:"managerLinkUp"`
+}
+
+func GetNATSStatus() NATSStatus {
+	isAgent := utils.FBL.AgentMode
+
+	status := NATSStatus{
+		Role:          "manager",
+		HAMode:        IsNATSHA(),
+		NebulaStarted: NebulaStarted,
+		ServerRunning: NATSStarted && ns != nil,
+		Starting:      !natsStartTime.IsZero() && time.Since(natsStartTime) < natsStartGracePeriod,
+	}
+	if isAgent {
+		status.Role = "agent"
+		status.JetStreamMode = "disabled"
+	} else if status.HAMode {
+		status.JetStreamMode = "clustered"
+	} else {
+		status.JetStreamMode = "standalone"
+	}
+
+	myIP := ""
+	if device, err := GetCurrentDevice(); err == nil {
+		myIP = device.IP
+	}
+	status.KnownManagers = getManagerIPs(myIP)
+
+	if ns != nil {
+		status.ConnectedClients = ns.NumClients()
+		status.ConnectedLeafs = ns.NumLeafNodes()
+		status.ClusterRoutes = ns.NumRoutes()
+	}
+
+	if isAgent {
+		// on an agent NumLeafNodes counts its solicited links to managers
+		status.ManagerLinkUp = status.ConnectedLeafs > 0
+	} else {
+		status.ManagerLinkUp = status.ServerRunning
+	}
+
+	status.ClientConnected = IsClientConnected()
+
+	clientConfigLock.RLock()
+	if js != nil {
+		if _, err := js.AccountInfo(); err == nil {
+			status.JetStreamReady = true
+		}
+		if _, err := js.KeyValue("constellation-nodes"); err == nil {
+			status.KVNodesReady = true
+		}
+	}
+	clientConfigLock.RUnlock()
+
+	return status
 }
 
 func CloseNATSClient() {
@@ -782,6 +1044,13 @@ func MasterNATSClientRouter() {
 func PingNATSClient() bool {
 	if IsConstellationStandalone() {
 		return true
+	}
+
+	// An isolated agent's local client still looks healthy — without a
+	// leafnode link to a manager it isn't connected to the constellation.
+	if utils.FBL.AgentMode && (ns == nil || ns.NumLeafNodes() == 0) {
+		utils.Warn("[NATS] Agent has no leafnode link to a manager")
+		return false
 	}
 
 	response, err := SendNATSMessage("cosmos._global_.ping", "Ping")

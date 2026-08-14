@@ -14,12 +14,34 @@ import (
 	"github.com/azukaar/cosmos-server/src/utils"
 )
 
+// getNATSReplicas derives the bucket replication factor from the declared
+// topology: R3 iff the constellation was created in HA mode, else R1.
 func getNATSReplicas() int {
-	r := utils.GetMainConfig().ConstellationConfig.NATSReplicas
-	if r < 1 {
-		return 1
+	if IsNATSHA() {
+		return 3
 	}
-	return r
+	return 1
+}
+
+// createKVAtTopology creates a KV bucket at the declared replication factor
+// (R3 in HA, R1 otherwise); creation fails while an HA cluster is still
+// forming and callers retry. A bucket stuck at the wrong replica count is
+// dropped and recreated — these are ephemeral memory caches with short TTLs.
+func createKVAtTopology(cfg nats.KeyValueConfig) (nats.KeyValue, error) {
+	cfg.Replicas = getNATSReplicas()
+	kv, err := js.CreateKeyValue(&cfg)
+	if err == nil {
+		return kv, nil
+	}
+	if si, errInfo := js.StreamInfo("KV_" + cfg.Bucket); errInfo == nil && si.Config.Replicas != cfg.Replicas {
+		utils.Warn("[NATS] KV '" + cfg.Bucket + "' exists with " + strconv.Itoa(si.Config.Replicas) +
+			" replicas instead of " + strconv.Itoa(cfg.Replicas) + ", recreating at the declared topology")
+		if errDel := js.DeleteKeyValue(cfg.Bucket); errDel != nil {
+			return nil, errDel
+		}
+		return js.CreateKeyValue(&cfg)
+	}
+	return nil, err
 }
 
 func GetAllTunneledRoutes() []utils.ProxyRouteConfig {
@@ -113,6 +135,10 @@ func ClientHeartbeatInit() {
 	// Stop any existing heartbeat
 	StopHeartbeat()
 
+	// Only managers create buckets — an agent's unsynced defaults could win
+	// the creation race with the wrong replica count; agents just wait.
+	isAgent := utils.FBL.AgentMode
+
 	for i := 0; i < 20; i++ {
 		time.Sleep(3 * time.Second)
 
@@ -138,12 +164,24 @@ func ClientHeartbeatInit() {
 			break
 		}
 
-		_, err = js.CreateKeyValue(&nats.KeyValueConfig{
-			Bucket:   "constellation-nodes",
-			TTL:      10 * time.Second,
-			Storage:  nats.MemoryStorage,
-			Replicas: getNATSReplicas(),
+		if isAgent {
+			clientConfigLock.RUnlock()
+			utils.Debug("[NATS] Waiting for a manager to create the Key-Value store... " + err.Error())
+			continue
+		}
+
+		_, err = createKVAtTopology(nats.KeyValueConfig{
+			Bucket:  "constellation-nodes",
+			TTL:     10 * time.Second,
+			Storage: nats.MemoryStorage,
 		})
+		if err == nil {
+			// pre-create the sticky bucket too, so agents (which never
+			// create buckets) can use it even when the manager is not a LB
+			if _, errSticky := ensureStickyBucket(); errSticky != nil {
+				utils.Warn("[NATS] Could not pre-create tunnel-sticky store: " + errSticky.Error())
+			}
+		}
 		clientConfigLock.RUnlock()
 
 		if err == nil {
@@ -312,9 +350,21 @@ func ClientHeartbeatInit() {
 				}
 
 				kv, err := js.KeyValue("constellation-nodes")
+				if err != nil && !isAgent {
+					// self-heal: bucket missing (HA cluster still forming at
+					// init, or memory stream wiped by a cluster restart)
+					kv, err = createKVAtTopology(nats.KeyValueConfig{
+						Bucket:  "constellation-nodes",
+						TTL:     10 * time.Second,
+						Storage: nats.MemoryStorage,
+					})
+					if err == nil {
+						utils.Log("[NATS] Recreated Key-Value store 'constellation-nodes'")
+					}
+				}
 				if err != nil {
 					clientConfigLock.RUnlock()
-					utils.Warn("[NATS] NATS client not connected getting Key-Value store during heartbeat, store is offline will skip this cycle " + err.Error())
+					utils.Warn("[NATS] JetStream KV store unavailable during heartbeat, skipping cycle: " + err.Error())
 					continue
 				}
 
@@ -498,13 +548,16 @@ func ensureStickyBucket() (nats.KeyValue, error) {
 	if err == nil {
 		return kv, nil
 	}
-	kv, err = js.CreateKeyValue(&nats.KeyValueConfig{
-		Bucket:   "tunnel-sticky",
-		TTL:      120 * time.Second,
-		Storage:  nats.MemoryStorage,
-		Replicas: getNATSReplicas(),
+	if utils.FBL.AgentMode {
+		// managers own bucket creation; the manager pre-creates this in
+		// ClientHeartbeatInit, so just report it's not there yet
+		return nil, err
+	}
+	return createKVAtTopology(nats.KeyValueConfig{
+		Bucket:  "tunnel-sticky",
+		TTL:     120 * time.Second,
+		Storage: nats.MemoryStorage,
 	})
-	return kv, err
 }
 
 func GetStickyTarget(clientKey string) (string, bool) {

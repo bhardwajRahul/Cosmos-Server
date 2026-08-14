@@ -286,9 +286,11 @@ func stop() {
 
 	NebulaStarted = false
 	NATSStarted = false
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
 	CachedDevices = map[string]utils.ConstellationDevice{}
 	CachedDeviceNames = map[string]string{}
+	deviceCacheMux.Unlock()
 }
 
 var restartMutex sync.Mutex
@@ -298,7 +300,9 @@ func RestartNebula() {
 	defer restartMutex.Unlock()
 
 	utils.Log("Restarting Constellation...")
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
+	deviceCacheMux.Unlock()
 	StopNATS()
 	CloseNATSClient()
 	stop()
@@ -344,9 +348,11 @@ func ResetNebula() error {
 
 	utils.SetBaseMainConfig(config)
 
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
 	CachedDevices = map[string]utils.ConstellationDevice{}
 	CachedDeviceNames = map[string]string{}
+	deviceCacheMux.Unlock()
 
 	utils.SoftRestartServer()
 
@@ -564,6 +570,22 @@ func getYAMLClientConfig(name, configPath, capki, cert, key, APIKey string, devi
 	configMap["cstln_ip"] = device.IP
 	configMap["cstln_config_endpoint"] = utils.GetServerURL("")
 	configMap["cstln_ip_range"] = utils.GetMainConfig().ConstellationConfig.IPRange
+
+	// IsNATSHA (not NATSReplicas directly): only the creator's main config
+	// carries NATSReplicas, so a non-creator manager enrolling a device must
+	// fall back to its own cstln_nats_ha to propagate the HA flag.
+	configMap["cstln_nats_ha"] = IsNATSHA()
+
+	// Seed managers as bootstrap dial hints: agents dial managers and a fresh
+	// node's device DB is empty until its first sync (which itself rides on
+	// NATS). Self-heals from the synced DB afterwards.
+	seedManagers := []string{}
+	for _, l := range devices {
+		if l.CosmosNode == 2 && cleanIp(l.IP) != cleanIp(device.IP) {
+			seedManagers = append(seedManagers, cleanIp(l.IP))
+		}
+	}
+	configMap["cstln_nats_managers"] = seedManagers
 
 	if getLicence && device.CosmosNode == 0 {
 		// get client licence
@@ -920,7 +942,8 @@ func generateNebulaCACert(name string) error {
 }
 
 func GetDeviceIp(device string) string {
-	return CachedDeviceNames[device]
+	_, names := deviceCacheSnapshot()
+	return names[device]
 }
 
 func populateIPTableMasquerade() {
@@ -1119,16 +1142,21 @@ func GetCurrentDeviceName() (string, error) {
 var cachedCurrentDevice *utils.ConstellationDevice
 
 func GetCurrentDevice() (utils.ConstellationDevice, error) {
+	deviceCacheMux.RLock()
 	if cachedCurrentDevice != nil {
-		return *cachedCurrentDevice, nil
+		d := *cachedCurrentDevice
+		deviceCacheMux.RUnlock()
+		return d, nil
 	}
+	deviceCacheMux.RUnlock()
 
 	name, err := GetCurrentDeviceName()
 	if err != nil {
 		return utils.ConstellationDevice{}, err
 	}
 
-	device, exists := CachedDevices[name]
+	devices, _ := deviceCacheSnapshot()
+	device, exists := devices[name]
 	if !exists {
 		nebulaFile, err := ioutil.ReadFile(utils.CONFIGFOLDER + "nebula.yml")
 		if err != nil {
@@ -1214,7 +1242,9 @@ func GetCurrentDevice() (utils.ConstellationDevice, error) {
 		}
 	}
 
+	deviceCacheMux.Lock()
 	cachedCurrentDevice = &device
+	deviceCacheMux.Unlock()
 	return device, nil
 }
 

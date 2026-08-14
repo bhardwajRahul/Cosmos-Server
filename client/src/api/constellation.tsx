@@ -32,6 +32,15 @@ export default function createConstellationAPI(apiFetch: ApiFetch) {
     }))
   }
 
+  function natsStatus() {
+    return wrap(apiFetch('/cosmos/api/constellation/nats-status', {
+      method: 'GET',
+      headers: {
+          'Content-Type': 'application/json'
+      },
+    }))
+  }
+
   function getNextIP() {
     return wrap(apiFetch('/cosmos/api/constellation/get-next-ip', {
       method: 'GET',
@@ -224,6 +233,7 @@ export default function createConstellationAPI(apiFetch: ApiFetch) {
     connect,
     block,
     ping,
+    natsStatus,
     create,
     pingDevice,
     tunnels,

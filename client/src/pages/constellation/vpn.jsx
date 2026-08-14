@@ -4,7 +4,7 @@ import * as API from "../../api";
 import AddDeviceModal from "./addDevice";
 import PrettyTableView from "../../components/tableView/prettyTableView";
 import { DeleteButton } from "../../components/delete";
-import { ApiOutlined, CloudOutlined, CloudServerOutlined, CompassOutlined, DesktopOutlined, ExportOutlined, LaptopOutlined, MobileOutlined, NodeIndexOutlined, QuestionCircleOutlined, SyncOutlined, TabletOutlined } from "@ant-design/icons";
+import { ApiOutlined, CloudOutlined, CloudServerOutlined, CompassOutlined, DesktopOutlined, DownOutlined, ExportOutlined, LaptopOutlined, MobileOutlined, NodeIndexOutlined, QuestionCircleOutlined, SyncOutlined, TabletOutlined, UpOutlined } from "@ant-design/icons";
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, LinearProgress, Skeleton, Stack, Switch, Tooltip, Typography } from "@mui/material";
 import { CosmosCheckbox, CosmosFormDivider, CosmosInputText } from "../config/users/formShortcuts";
 import MainCard from "../../components/MainCard";
@@ -33,6 +33,8 @@ export const ConstellationVPN = ({ freeVersion }) => {
   const { hasPermission } = useClientInfos();
   const isAdmin = hasPermission(PERM_RESOURCES);
   const [ping, setPing] = useState(0);
+  const [natsInfo, setNatsInfo] = useState(null);
+  const [natsExpanded, setNatsExpanded] = useState(false); // mobile: timeline collapsed by default
   const [coStatus, setCoStatus] = React.useState(null);
   const [devicePingStatus, setDevicePingStatus] = useState({}); // {deviceName: 'loading' | 'success' | 'error'}
   const [firewallLoading, setFirewallLoading] = useState(null); // deviceName being toggled
@@ -135,6 +137,10 @@ export const ConstellationVPN = ({ freeVersion }) => {
       });
       setDevicePingStatus(initialStatus);
 
+      // fire alongside the ping — awaiting the ping first delays the timeline
+      if (isAdmin) {
+        API.constellation.natsStatus().then((res) => setNatsInfo(res.data)).catch(() => setNatsInfo(false));
+      }
       setPing((await API.constellation.ping()).data ? 2 : 1);
       // Ping devices after loading
       pingDevices(nonBlockedDevices);
@@ -171,6 +177,12 @@ export const ConstellationVPN = ({ freeVersion }) => {
   const isLeaderDevice = (r) => !!leader && r && sanitizeName(r.deviceName) === leader;
 
   const currentDevice = devices && devices.find(d => d.deviceName === currentDeviceName);
+
+  // whole dependency chain healthy — a successful ping with a broken chain is
+  // only a degraded connection (non-admins have no natsInfo: assume healthy)
+  const chainOk = !natsInfo || (natsInfo.nebulaStarted && natsInfo.serverRunning && natsInfo.clientConnected
+    && (natsInfo.role !== 'agent' || natsInfo.managerLinkUp)
+    && natsInfo.jetstreamReady && natsInfo.kvNodesReady);
 
   return <>
     {(devices && config && users) ? <>
@@ -241,15 +253,20 @@ export const ConstellationVPN = ({ freeVersion }) => {
                 <Typography variant="body2">{constellationEnabled ? t('mgmt.constellation.setup.enabledCheckbox') : t('mgmt.constellation.disabled')}</Typography>
                 {constellationEnabled && <>
                   <Typography variant="body2" color="textSecondary">-</Typography>
-                  <Typography variant="body2" color={ping === 2 ? 'success.main' : ping === 1 ? 'error.main' : 'textSecondary'}>
+                  <Typography variant="body2" color={ping === 2 ? (chainOk ? 'success.main' : 'warning.main') : (ping === 1 && !natsInfo?.starting) ? 'error.main' : 'textSecondary'}>
                     {[
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CircularProgress color="inherit" size={12} /> {t('mgmt.constellation.constStatus')}</span>,
-                      t('mgmt.constellation.constStatusDown'),
-                      t('mgmt.constellation.constStatusConnected'),
+                      natsInfo?.starting
+                        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><CircularProgress color="inherit" size={12} /> {t('mgmt.constellation.constStatusStarting')}</span>
+                        : t('mgmt.constellation.constStatusDown'),
+                      chainOk ? t('mgmt.constellation.constStatusConnected') : t('mgmt.constellation.constStatusDegraded'),
                     ][ping]}
                   </Typography>
                   <IconButton size="small" onClick={async () => {
                     setPing(0);
+                    if (isAdmin) {
+                      API.constellation.natsStatus().then((res) => setNatsInfo(res.data)).catch(() => setNatsInfo(false));
+                    }
                     setPing((await API.constellation.ping()).data ? 2 : 1);
                   }}>
                     <SyncOutlined style={{ fontSize: 14 }} />
@@ -273,6 +290,134 @@ export const ConstellationVPN = ({ freeVersion }) => {
                 /></PermissionGuard>
               }
             </Stack>
+
+            {constellationEnabled && isAdmin && natsInfo === null && (
+              // status request still in flight — placeholder so the timeline
+              // doesn't pop in (or silently stay absent on slow requests)
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 2, py: 1.5, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                <CircularProgress size={12} sx={{ color: 'text.secondary' }} />
+                <Typography variant="caption" color="textSecondary">{t('mgmt.constellation.nats.loading')}</Typography>
+              </Stack>
+            )}
+            {constellationEnabled && isAdmin && natsInfo && (() => {
+              const isAgentNode = natsInfo.role === 'agent';
+              // dependency chain: each step only works if the previous ones do,
+              // so the first red dot is where the stack actually broke
+              const steps = [
+                {
+                  key: 'vpn',
+                  label: t('mgmt.constellation.nats.vpn'),
+                  ok: natsInfo.nebulaStarted,
+                  state: natsInfo.nebulaStarted ? t('mgmt.constellation.nats.running') : t('mgmt.constellation.nats.stopped'),
+                },
+                {
+                  key: 'server',
+                  label: t('mgmt.constellation.nats.server'),
+                  ok: natsInfo.serverRunning,
+                  state: natsInfo.serverRunning ? t('mgmt.constellation.nats.running') : t('mgmt.constellation.nats.stopped'),
+                },
+                {
+                  key: 'client',
+                  label: t('mgmt.constellation.nats.client'),
+                  ok: natsInfo.clientConnected,
+                  state: natsInfo.clientConnected ? t('mgmt.constellation.nats.connected') : t('mgmt.constellation.nats.disconnected'),
+                },
+                ...(isAgentNode ? [{
+                  key: 'managerLink',
+                  label: t('mgmt.constellation.nats.managerLink'),
+                  ok: natsInfo.managerLinkUp,
+                  state: natsInfo.managerLinkUp ? t('mgmt.constellation.nats.connected') : t('mgmt.constellation.nats.disconnected'),
+                }] : []),
+                {
+                  // end-to-end ping over NATS: needs the client and, on
+                  // agents, the manager link — hence its position
+                  key: 'ping',
+                  label: t('mgmt.constellation.nats.constellation'),
+                  ok: ping === 2,
+                  pending: ping === 0,
+                  state: ping === 2 ? t('mgmt.constellation.nats.connected') : t('mgmt.constellation.nats.disconnected'),
+                },
+                {
+                  key: 'js',
+                  label: t('mgmt.constellation.nats.js'),
+                  ok: natsInfo.jetstreamReady,
+                  state: natsInfo.jetstreamReady ? t('mgmt.constellation.nats.ready') : t('mgmt.constellation.nats.notReady'),
+                  tooltip: t('mgmt.constellation.nats.jsTooltip'),
+                },
+                {
+                  key: 'kv',
+                  label: t('mgmt.constellation.nats.kv'),
+                  ok: natsInfo.kvNodesReady,
+                  warnOnly: true,
+                  state: natsInfo.kvNodesReady ? t('mgmt.constellation.nats.ready') : t('mgmt.constellation.nats.notReady'),
+                },
+              ];
+              const caption = [
+                natsInfo.connectedClients + ' ' + t('mgmt.constellation.nats.clients'),
+                natsInfo.connectedLeafs + ' ' + t(isAgentNode ? 'mgmt.constellation.nats.managerLinks' : 'mgmt.constellation.nats.leafs'),
+                ...(natsInfo.haMode ? [natsInfo.clusterRoutes + ' ' + t('mgmt.constellation.nats.routes')] : []),
+                ...(natsInfo.knownManagers && natsInfo.knownManagers.length > 0
+                  ? [t('mgmt.constellation.nats.managers').toLowerCase() + ': ' + natsInfo.knownManagers.join(', ')] : []),
+              ].join(' · ');
+              // mobile collapsed summary: how far up the chain we got
+              const firstBrokenIdx = steps.findIndex(s => !s.ok);
+              const allOk = firstBrokenIdx === -1;
+              const lastHealthy = allOk ? steps[steps.length - 1] : (firstBrokenIdx > 0 ? steps[firstBrokenIdx - 1] : null);
+              const firstBroken = allOk ? null : steps[firstBrokenIdx];
+              return (
+                <Stack spacing={1} sx={{ px: 2, py: 1.5, borderRadius: 1, backgroundColor: 'action.hover' }}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between">
+                    <Typography variant="caption" color="textSecondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      {(isAgentNode ? t('mgmt.constellation.nats.role.agent') : t('mgmt.constellation.nats.role.manager'))
+                        + (natsInfo.haMode ? ' (' + t('mgmt.constellation.nats.ha') + ')' : '')
+                        + ' · ' + t('mgmt.constellation.nats.js') + ' ' + t('mgmt.constellation.nats.jsMode.' + natsInfo.jetstreamMode)}
+                    </Typography>
+                    <IconButton size="small" sx={{ display: { xs: 'inline-flex', md: 'none' }, p: 0.25 }}
+                      onClick={() => setNatsExpanded(!natsExpanded)}>
+                      {natsExpanded ? <UpOutlined style={{ fontSize: 10 }} /> : <DownOutlined style={{ fontSize: 10 }} />}
+                    </IconButton>
+                  </Stack>
+                  {!natsExpanded && (
+                    <Stack direction="row" spacing={0.75} alignItems="center" onClick={() => setNatsExpanded(true)}
+                      sx={{ display: { xs: 'flex', md: 'none' }, cursor: 'pointer' }}>
+                      {firstBroken && (firstBroken.pending || natsInfo.starting)
+                        ? <CircularProgress size={10} sx={{ color: 'text.secondary' }} />
+                        : <StatusDot status={allOk ? 'success' : (firstBroken.warnOnly ? 'warning' : 'error')} />}
+                      <Typography variant="body2" sx={{ lineHeight: 1.2 }}>
+                        {lastHealthy
+                          ? lastHealthy.label + ' · ' + lastHealthy.state
+                          : firstBroken.label + ' · ' + ((firstBroken.pending || natsInfo.starting) ? t('mgmt.constellation.nats.starting') : firstBroken.state)}
+                      </Typography>
+                    </Stack>
+                  )}
+                  <Stack alignItems={{ xs: 'flex-start', md: 'center' }} useFlexGap
+                    direction={{ xs: 'column', md: 'row' }}
+                    sx={{ columnGap: 1, rowGap: 1, display: { xs: natsExpanded ? 'flex' : 'none', md: 'flex' } }}>
+                    {steps.map((s, i) => (
+                      <React.Fragment key={s.key}>
+                        {i > 0 && <Box sx={{ flexGrow: 1, minWidth: 16, borderTop: '1px solid', borderColor: 'divider', display: { xs: 'none', md: 'block' } }} />}
+                        <Tooltip title={s.tooltip || ''}>
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            {!s.ok && (s.pending || natsInfo.starting)
+                              ? <CircularProgress size={10} sx={{ color: 'text.secondary' }} />
+                              : <StatusDot status={s.ok ? 'success' : (s.warnOnly ? 'warning' : 'error')} />}
+                            <Stack spacing={0}>
+                              <Typography variant="body2" sx={{ lineHeight: 1.2 }}>{s.label}</Typography>
+                              <Typography variant="caption" sx={{ lineHeight: 1.2 }}
+                                color={s.ok || s.pending || natsInfo.starting ? 'textSecondary' : (s.warnOnly ? 'warning.main' : 'error.main')}>
+                                {s.ok ? s.state : ((s.pending || natsInfo.starting) ? t('mgmt.constellation.nats.starting') : s.state)}
+                              </Typography>
+                            </Stack>
+                          </Stack>
+                        </Tooltip>
+                      </React.Fragment>
+                    ))}
+                  </Stack>
+                  <Typography variant="caption" color="textSecondary"
+                    sx={{ display: { xs: natsExpanded ? 'block' : 'none', md: 'block' } }}>{caption}</Typography>
+                </Stack>
+              );
+            })()}
           </Stack>
 
           {constellationEnabled && <PermissionGuard permission={PERM_RESOURCES}>
