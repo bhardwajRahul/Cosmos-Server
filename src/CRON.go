@@ -241,6 +241,7 @@ func CRON() {
 		s.Every(1).Hours().Do(utils.CleanBannedIPs)
 		s.Every(1).Hours().Do(proxy.CleanUp)
 		s.Every(1).Hours().Do(proxy.CleanUpSocket)
+		s.Every(1).Hours().Do(docker.CleanupExitedDeploymentContainers)
 		s.Every(1).Day().At("2:00").Do(func() {
 			utils.CleanupByDate("notifications")
 			utils.CleanupByDate("events")

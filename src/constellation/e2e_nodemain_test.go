@@ -75,8 +75,8 @@ func e2eControlServer(addr string, quit chan struct{}) {
 		writeJSON(w, 200, map[string]interface{}{
 			"name":            name,
 			"agent":           utils.FBL.AgentMode,
-			"nebulaStarted":   NebulaStarted,
-			"natsStarted":     NATSStarted,
+			"nebulaStarted":   NebulaStarted.Load(),
+			"natsStarted":     NATSStarted.Load(),
 			"clientConnected": IsClientConnected(),
 			"standalone":      IsConstellationStandalone(),
 			"goroutines":      runtime.NumGoroutine(),

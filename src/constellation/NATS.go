@@ -257,7 +257,14 @@ func (natsLogAdapter) Tracef(format string, v ...interface{}) {
 	utils.Debug("[NATS internal] " + fmt.Sprintf(format, v...))
 }
 
+// natsStartMutex serializes all `ns` writers (StartNATS from Init/restart/watchdog, StopNATS);
+// waiters re-check ns/NATSStarted after acquiring rather than no-oping.
+var natsStartMutex sync.Mutex
+
 func StartNATS() {
+	natsStartMutex.Lock()
+	defer natsStartMutex.Unlock()
+
 	if ns != nil {
 		return
 	}
@@ -339,6 +346,9 @@ func StartNATS() {
 						"cosmos.*.deployments.>",
 						"$KV.constellation-nodes.>",
 						"$KV.constellation-deployments.>",
+						// Scheduler leader lease lives in its own bucket (see
+						// src/pro scheduler election)
+						"$KV.constellation-leader.>",
 						"$JS.API.STREAM.INFO.>",
 						"$JS.API.>",
 					},
@@ -350,6 +360,9 @@ func StartNATS() {
 						"_INBOX.>",
 						"$KV.constellation-nodes.>",
 						"$KV.constellation-deployments.>",
+						// Scheduler leader lease lives in its own bucket (see
+						// src/pro scheduler election)
+						"$KV.constellation-leader.>",
 						"$JS.API.STREAM.INFO.>",
 						"$JS.API.>",
 					},
@@ -522,7 +535,7 @@ func StartNATS() {
 			ns.SetLogger(natsLogAdapter{}, true, true)
 		}
 
-		if !NebulaStarted {
+		if !NebulaStarted.Load() {
 			utils.Error("[NATS] Nebula not started, aborting NATS server setup", nil)
 			ns.Shutdown()
 			ns = nil
@@ -549,10 +562,14 @@ func StartNATS() {
 			ns = nil
 		}
 		utils.MajorError("[NATS] Error starting NATS server", err)
+		// hand off to the watchdog so a failed bring-up gets retried (standalone nodes don't need a server)
+		if NebulaStarted.Load() && !IsConstellationStandalone() {
+			go natsServerWatchdog()
+		}
 		return
 	}
 
-	NATSStarted = true
+	NATSStarted.Store(true)
 
 	utils.Log("[NATS] Started NATS server on host " + opts.Host + ":" + strconv.Itoa(opts.Port))
 
@@ -566,7 +583,7 @@ func StartNATS() {
 		defer atomic.StoreInt32(&natsInitSupervisorRunning, 0)
 
 		backoff := 2 * time.Second
-		for NATSStarted {
+		for NATSStarted.Load() {
 			if err := InitNATSClient(); err == nil {
 				return
 			}
@@ -582,6 +599,39 @@ func StartNATS() {
 // restarts) from stacking retry goroutines.
 var natsInitSupervisorRunning int32
 
+// natsServerWatchdogRunning single-flights the watchdog goroutine (CAS on entry, store-0 on exit)
+var natsServerWatchdogRunning int32
+
+// natsServerWatchdog retries StartNATS with capped backoff while nebula is up but the server isn't
+func natsServerWatchdog() {
+	if !atomic.CompareAndSwapInt32(&natsServerWatchdogRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&natsServerWatchdogRunning, 0)
+
+	backoff := 5 * time.Second
+	for {
+		// re-check on both sides of the sleep so we never fight an in-progress restart
+		if !NebulaStarted.Load() || NATSStarted.Load() {
+			return
+		}
+		time.Sleep(backoff)
+		if !NebulaStarted.Load() || NATSStarted.Load() {
+			return
+		}
+
+		utils.Warn("[NATS] Watchdog retrying NATS server start (backoff " + backoff.String() + ")")
+		StartNATS()
+
+		if backoff < 60*time.Second {
+			backoff *= 2
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+		}
+	}
+}
+
 // natsStartTime marks the last constellation NATS bring-up; within
 // natsStartGracePeriod the UI reports failing steps as still starting.
 var natsStartTime time.Time
@@ -591,12 +641,16 @@ const natsStartGracePeriod = 2 * time.Minute
 func StopNATS() {
 	utils.Log("[NATS] Stopping NATS server...")
 
+	// serialized with StartNATS so we never shut down a server mid-bring-up
+	natsStartMutex.Lock()
+	defer natsStartMutex.Unlock()
+
 	if ns != nil {
 		ns.Shutdown()
 		ns.WaitForShutdown()
 		ns = nil
 	}
-	NATSStarted = false
+	NATSStarted.Store(false)
 }
 
 // sync lock - RWMutex allows multiple readers, single writer
@@ -625,7 +679,7 @@ func connectNATSClient(url string, user string, pwd string) (*nats.Conn, error) 
 }
 
 func InitNATSClient() error {
-	if !NATSStarted {
+	if !NATSStarted.Load() {
 		utils.Warn("[NATS] NATS server not started, cannot initialize client")
 		return errors.New("NATS server not started, cannot initialize client")
 	}
@@ -641,7 +695,7 @@ func InitNATSClient() error {
 	var err error
 	retries := 0
 
-	if !NebulaStarted {
+	if !NebulaStarted.Load() {
 		utils.Error("[NATS] Nebula not started, aborting NATS client connection", nil)
 		return errors.New("Nebula not started, aborting NATS client connection")
 	}
@@ -675,7 +729,7 @@ func InitNATSClient() error {
 			return err
 		}
 
-		if !NebulaStarted {
+		if !NebulaStarted.Load() {
 			utils.Error("[NATS] Nebula not started, aborting NATS client connection retry", nil)
 			nc = nil
 			return errors.New("Nebula not started, aborting NATS client connection retry")
@@ -685,7 +739,7 @@ func InitNATSClient() error {
 		time.Sleep(time.Duration(2*(retries+1)) * time.Second)
 		clientConfigLock.Lock()
 
-		if !NebulaStarted {
+		if !NebulaStarted.Load() {
 			retries++
 			utils.Warn("[NATS] Nebula not started yet, delaying NATS client connection retry")
 			continue
@@ -854,8 +908,8 @@ func GetNATSStatus() NATSStatus {
 	status := NATSStatus{
 		Role:          "manager",
 		HAMode:        IsNATSHA(),
-		NebulaStarted: NebulaStarted,
-		ServerRunning: NATSStarted && ns != nil,
+		NebulaStarted: NebulaStarted.Load(),
+		ServerRunning: NATSStarted.Load() && ns != nil,
 		Starting:      !natsStartTime.IsZero() && time.Since(natsStartTime) < natsStartGracePeriod,
 	}
 	if isAgent {

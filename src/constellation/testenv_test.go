@@ -57,9 +57,9 @@ func resetConstellationGlobals() {
 	CachedDevices = map[string]utils.ConstellationDevice{}
 	CachedDeviceNames = map[string]string{}
 	deviceCacheMux.Unlock()
-	NebulaStarted = false
+	NebulaStarted.Store(false)
 	NebulaHasStarted = false
-	NATSStarted = false
+	NATSStarted.Store(false)
 
 	dnsMux.Lock()
 	DNSStarted = false

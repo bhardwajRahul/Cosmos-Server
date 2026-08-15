@@ -4,11 +4,13 @@ import (
 	"github.com/azukaar/cosmos-server/src/utils"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-var NebulaStarted = false
+// NebulaStarted/NATSStarted are atomic: read from watchdog/supervisor goroutines
+var NebulaStarted atomic.Bool
 var NebulaHasStarted = false
-var NATSStarted = false
+var NATSStarted atomic.Bool
 var CachedDeviceNames = map[string]string{}
 var CachedDevices = map[string]utils.ConstellationDevice{}
 var needToSyncCA = false
@@ -27,6 +29,83 @@ func deviceCacheSnapshot() (map[string]utils.ConstellationDevice, map[string]str
 
 func resyncConstellationNodes() {
 	SendNewDBSyncMessage()
+}
+
+// refreshDeviceCache rebuilds CachedDevices/CachedDeviceNames from the devices collection
+// and invalidates cachedCurrentDevice. Called at Init and whenever the on-disk database
+// changed without a full restart (e.g. a no-restart sync from a tag-only device edit).
+func refreshDeviceCache() {
+	utils.Log("Constellation: populating device names cache...")
+	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
+	defer closeDb()
+
+	if errCo != nil {
+		utils.Error("Database Connect", errCo)
+		return
+	}
+
+	cursor, err := c.Find(nil, map[string]interface{}{})
+	if err != nil {
+		utils.Error("DeviceList: Error fetching devices", err)
+		return
+	}
+	defer cursor.Close(nil)
+
+	var devices []utils.ConstellationDevice
+	if err = cursor.All(nil, &devices); err != nil {
+		utils.Error("DeviceList: Error decoding devices", err)
+		return
+	}
+
+	// build into locals and swap once under the write lock,
+	// so concurrent readers never see a half-built cache
+	newNames := map[string]string{}
+	newDevices := map[string]utils.ConstellationDevice{}
+	for _, device := range devices {
+		if device.Blocked {
+			continue
+		}
+		newNames[device.DeviceName] = device.IP
+		newDevices[device.DeviceName] = device
+		utils.Debug("Constellation: device name cached: " + device.DeviceName + " -> " + device.IP)
+
+		if device.PublicHostname != "" {
+			publicHostnames := strings.Split(device.PublicHostname, ",")
+			for _, publicHostname := range publicHostnames {
+				newNames[strings.TrimSpace(publicHostname)] = device.IP
+				newDevices[strings.TrimSpace(publicHostname)] = device
+				utils.Debug("Constellation: public hostname cached: " + publicHostname + " -> " + device.IP)
+			}
+		}
+	}
+
+	// invalidate before the fallback lookup so GetCurrentDevice below
+	// re-derives instead of returning the stale cached value
+	deviceCacheMux.Lock()
+	cachedCurrentDevice = nil
+	deviceCacheMux.Unlock()
+
+	// If current device is not in cache, populate from nebula.yml
+	currentDeviceName, errName := GetCurrentDeviceName()
+	if errName == nil && currentDeviceName != "" {
+		if _, exists := newDevices[currentDeviceName]; !exists {
+			utils.Log("Constellation: current device not in cache, populating from config...")
+			currentDevice, errDevice := GetCurrentDevice()
+			if errDevice == nil {
+				newNames[currentDeviceName] = currentDevice.IP
+				newDevices[currentDeviceName] = currentDevice
+				utils.Debug("Constellation: current device cached: " + currentDeviceName + " -> " + currentDevice.IP)
+			}
+		}
+	}
+
+	deviceCacheMux.Lock()
+	cachedCurrentDevice = nil
+	CachedDeviceNames = newNames
+	CachedDevices = newDevices
+	deviceCacheMux.Unlock()
+
+	utils.Log("Constellation: device names cache populated")
 }
 
 func getConstellationTunnelRoutes() []utils.ProxyRouteConfig {
@@ -67,7 +146,7 @@ func InitHostname() {
 }
 
 func ConstellationConnected() bool {
-	return utils.GetMainConfig().ConstellationConfig.Enabled && NebulaStarted
+	return utils.GetMainConfig().ConstellationConfig.Enabled && NebulaStarted.Load()
 }
 
 func IsConstellationIP(ip string) bool {
@@ -114,77 +193,14 @@ func Init() {
 	utils.ResyncConstellationNodes = resyncConstellationNodes
 	utils.GetConstellationTunnelRoutes = getConstellationTunnelRoutes
 
-	NebulaStarted = false
-	NATSStarted = false
+	NebulaStarted.Store(false)
+	NATSStarted.Store(false)
 
 	var err error
 	
 	// if Constellation is enabled
 	if utils.GetMainConfig().ConstellationConfig.Enabled {
-		// populate CachedDeviceNames
-		utils.Log("Constellation: populating device names cache...")
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-		defer closeDb()
-
-		if errCo != nil {
-			utils.Error("Database Connect", errCo)
-		} else {
-			cursor, err := c.Find(nil, map[string]interface{}{})
-
-			if err != nil {
-				utils.Error("DeviceList: Error fetching devices", err)
-			} else {
-				defer cursor.Close(nil)
-				var devices []utils.ConstellationDevice
-
-				if err = cursor.All(nil, &devices); err != nil {
-					utils.Error("DeviceList: Error decoding devices", err)
-				} else {
-					// build into locals and swap once under the write lock,
-					// so concurrent readers never see a half-built cache
-					newNames := map[string]string{}
-					newDevices := map[string]utils.ConstellationDevice{}
-					for _, device := range devices {
-						if device.Blocked {
-							continue
-						}
-						newNames[device.DeviceName] = device.IP
-						newDevices[device.DeviceName] = device
-						utils.Debug("Constellation: device name cached: " + device.DeviceName + " -> " + device.IP)
-
-						if device.PublicHostname != "" {
-							publicHostnames := strings.Split(device.PublicHostname, ",")
-							for _, publicHostname := range publicHostnames {
-								newNames[strings.TrimSpace(publicHostname)] = device.IP
-								newDevices[strings.TrimSpace(publicHostname)] = device
-								utils.Debug("Constellation: public hostname cached: " + publicHostname + " -> " + device.IP)
-							}
-						}
-					}
-
-					// If current device is not in cache, populate from nebula.yml
-					currentDeviceName, errName := GetCurrentDeviceName()
-					if errName == nil && currentDeviceName != "" {
-						if _, exists := newDevices[currentDeviceName]; !exists {
-							utils.Log("Constellation: current device not in cache, populating from config...")
-							currentDevice, errDevice := GetCurrentDevice()
-							if errDevice == nil {
-								newNames[currentDeviceName] = currentDevice.IP
-								newDevices[currentDeviceName] = currentDevice
-								utils.Debug("Constellation: current device cached: " + currentDeviceName + " -> " + currentDevice.IP)
-							}
-						}
-					}
-
-					deviceCacheMux.Lock()
-					CachedDeviceNames = newNames
-					CachedDevices = newDevices
-					deviceCacheMux.Unlock()
-
-					utils.Log("Constellation: device names cache populated")
-				}
-			}
-		}
+		refreshDeviceCache()
 
 		// if !utils.GetMainConfig().ConstellationConfig.SlaveMode {
 		// 	if !utils.FBL.LValid {

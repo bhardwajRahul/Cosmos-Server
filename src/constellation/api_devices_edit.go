@@ -101,6 +101,20 @@ func DeviceEdit_API(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Only topology-affecting flags require a mesh restart; Tags reach the scheduler
+	// via the 2s heartbeat. If the current record can't be read, assume topology changed.
+	topologyChanged := true
+	var currentRecord utils.ConstellationDevice
+	if errFind := c.FindOne(nil, map[string]interface{}{
+		"DeviceName": deviceName,
+		"Blocked":    false,
+	}).Decode(&currentRecord); errFind == nil {
+		topologyChanged = currentRecord.IsLighthouse != request.IsLighthouse ||
+			currentRecord.IsRelay != request.IsRelay ||
+			currentRecord.IsExitNode != request.IsExitNode ||
+			currentRecord.IsLoadBalancer != request.IsLoadBalancer
+	}
+
 	_, err = c.UpdateOne(nil, map[string]interface{}{
 		"DeviceName": deviceName,
 		"Blocked":    false,
@@ -132,6 +146,16 @@ func DeviceEdit_API(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "OK",
 	})
+
+	if !topologyChanged {
+		// tag-only/no-op edit: local cache refresh first so the next heartbeat
+		// carries the new Tags, then sync peers without triggering their restart
+		go func() {
+			refreshDeviceCache()
+			SendNewDBSyncMessageNoRestart()
+		}()
+		return
+	}
 
 	go func() {
 		go SendNewDBSyncMessage()

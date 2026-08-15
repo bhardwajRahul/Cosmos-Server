@@ -286,6 +286,72 @@ func ListDeploymentVersionsRunningHere() (map[string]int, error) {
 	return versions, nil
 }
 
+// CleanupExitedDeploymentContainers removes scheduler-managed containers exited for
+// over 30 min (heartbeats only report running ones, so no remove is ever dispatched
+// for the corpse and a pinned container_name would collide with a re-placement).
+// Containers only — volumes/networks are reattached by future replicas. Hourly from CRON.
+func CleanupExitedDeploymentContainers() {
+	if err := Connect(); err != nil {
+		utils.Error("CleanupExitedDeploymentContainers: docker connect failed", err)
+		return
+	}
+
+	labelFilter := filters.NewArgs()
+	labelFilter.Add("label", DeploymentLabel)
+	labelFilter.Add("status", "exited")
+
+	containers, err := DockerClient.ContainerList(DockerContext, conttype.ListOptions{
+		All:     true,
+		Filters: labelFilter,
+	})
+	if err != nil {
+		utils.Error("CleanupExitedDeploymentContainers: ContainerList failed", err)
+		return
+	}
+
+	grace := 30 * time.Minute
+
+	for _, c := range containers {
+		// Defensive: the status filter should already scope to exited, but guard
+		// in case the daemon returns a broader set.
+		if c.State != "" && c.State != "exited" {
+			continue
+		}
+
+		name := c.ID
+		if len(c.Names) > 0 {
+			name = c.Names[0]
+		}
+		deployment := c.Labels[DeploymentLabel]
+
+		insp, ierr := DockerClient.ContainerInspect(DockerContext, c.ID)
+		if ierr != nil {
+			utils.Warn("CleanupExitedDeploymentContainers: inspect " + name + ": " + ierr.Error())
+			continue
+		}
+		if insp.State == nil {
+			continue
+		}
+		finishedAt, perr := time.Parse(time.RFC3339Nano, insp.State.FinishedAt)
+		if perr != nil {
+			// Unparseable finish time — don't guess, skip rather than risk
+			// removing a container that only just stopped.
+			utils.Warn("CleanupExitedDeploymentContainers: bad FinishedAt for " + name + ": " + insp.State.FinishedAt)
+			continue
+		}
+		if time.Since(finishedAt) < grace {
+			continue
+		}
+
+		// RemoveVolumes stays false: container only.
+		if rmErr := DockerClient.ContainerRemove(DockerContext, c.ID, conttype.RemoveOptions{Force: true}); rmErr != nil {
+			utils.Warn("CleanupExitedDeploymentContainers: failed to remove " + name + ": " + rmErr.Error())
+			continue
+		}
+		utils.Log(fmt.Sprintf("[SCHED-NODE] cleaned up exited container %s (deployment=%s, exited %s)", name, deployment, finishedAt.Format(time.RFC3339)))
+	}
+}
+
 // ContainerIsRunning returns true when the given container ID is in the "running"
 // Docker state. Used by the scheduler's waitForRunning polling loop.
 func ContainerIsRunning(containerID string) (bool, error) {

@@ -21,6 +21,9 @@ type SyncPayload struct {
 	RcloneConfig   string `json:"rcloneConfig"`
 	ConfigData     SyncConfigPayload `json:"configData"`
 	LastEdited     int64  `json:"lastEdited"`
+	// NoRestart: receivers apply the payload but skip the nebula+NATS restart.
+	// Inverse-named so the zero value keeps wire compat with old builds (= restart).
+	NoRestart      bool   `json:"noRestart,omitempty"`
 }
 
 type SyncDNSPayload struct {
@@ -41,8 +44,13 @@ type SyncRequestPayload struct {
 }
 
 func MakeSyncPayload(rawPayload string) string {
+	// restart-required is the historical default for every existing call site
+	return makeSyncPayload(rawPayload, false)
+}
+
+func makeSyncPayload(rawPayload string, noRestart bool) string {
 	utils.Log("Constellation: MakeSyncPayload: Making sync payload")
-	
+
 	// Read database file
 	dbPath := utils.CONFIGFOLDER + "database"
 	dbData, err := ioutil.ReadFile(dbPath)
@@ -119,6 +127,7 @@ func MakeSyncPayload(rawPayload string) string {
 			Roles:     utils.GetMainConfig().Roles,
 		},
 		LastEdited:     utils.GetFileLastModifiedTime(dbPath).Unix(),
+		NoRestart:      noRestart,
 	}
 
 	// JSON encode the payload
@@ -262,11 +271,18 @@ func ReceiveSyncPayload(rawPayload string) bool {
 		map[string]interface{}{},
 	)
 
+	if payload.NoRestart {
+		// non-topology changes only (e.g. Tags): rebuild the device cache in place
+		// (async — this runs on the NATS handler goroutine) instead of restarting
+		go refreshDeviceCache()
+		return false
+	}
+
 	return true
 }
 
 func SendRequestSyncMessage() {
-	if !NebulaStarted {
+	if !NebulaStarted.Load() {
 		utils.Warn("Constellation: SendRequestSyncMessage: Nebula not started, skipping sync request")
 		return
 	}
@@ -306,7 +322,17 @@ func SendRequestSyncMessage() {
 }
 
 func SendNewDBSyncMessage() {
-	if !NebulaStarted {
+	sendNewDBSyncMessage(false)
+}
+
+// SendNewDBSyncMessageNoRestart broadcasts the same whole-database sync but tells
+// receivers not to bounce nebula+NATS — for edits that don't touch mesh topology.
+func SendNewDBSyncMessageNoRestart() {
+	sendNewDBSyncMessage(true)
+}
+
+func sendNewDBSyncMessage(noRestart bool) {
+	if !NebulaStarted.Load() {
 		return
 	}
 
@@ -315,8 +341,8 @@ func SendNewDBSyncMessage() {
 	}
 
 	utils.Log("Constellation: SendNewDBSyncMessage: sending sync payload")
-	
-	payload := MakeSyncPayload("")
+
+	payload := makeSyncPayload("", noRestart)
 	if payload == "" {
 		utils.Warn("Constellation: SendNewDBSyncMessage: No sync payload to send")
 		return

@@ -44,6 +44,44 @@ func createKVAtTopology(cfg nats.KeyValueConfig) (nats.KeyValue, error) {
 	return nil, err
 }
 
+// kvCreatorFallbackAfter: how long a non-designated manager waits on a missing
+// bucket before assuming the designated creator is down and creating it itself.
+const kvCreatorFallbackAfter = 60 * time.Second
+
+// designatedKVCreator elects, deterministically from the local device cache, the
+// manager (lowest sanitized name, CosmosNode == 2) that owns creating the shared
+// 'constellation-nodes' bucket. Best-effort: the liveness fallback and a stale/empty
+// cache can still allow a second creator — the divergence sweep is the backstop.
+func designatedKVCreator() (creator string, isSelf bool) {
+	device, err := GetCurrentDevice()
+	if err != nil {
+		// cannot identify ourselves: claim creatorship rather than deadlock
+		return "", true
+	}
+	self := sanitizeNATSUsername(device.DeviceName)
+	creator = self
+	devices, _ := deviceCacheSnapshot()
+	for _, d := range devices {
+		if d.CosmosNode != 2 || d.DeviceName == "" {
+			continue
+		}
+		if name := sanitizeNATSUsername(d.DeviceName); name < creator {
+			creator = name
+		}
+	}
+	return creator, creator == self
+}
+
+// nodesKVConfig: the 'constellation-nodes' bucket shape — an ephemeral 10s-TTL
+// memory cache repopulated by every node's 2s heartbeat, so drop-and-recreate is safe.
+func nodesKVConfig() nats.KeyValueConfig {
+	return nats.KeyValueConfig{
+		Bucket:  "constellation-nodes",
+		TTL:     10 * time.Second,
+		Storage: nats.MemoryStorage,
+	}
+}
+
 func GetAllTunneledRoutes() []utils.ProxyRouteConfig {
 	// list routes with a tunnel property matching the device name
 	routesList := utils.GetMainConfig().HTTPConfig.ProxyConfig.Routes
@@ -139,7 +177,13 @@ func ClientHeartbeatInit() {
 	// the creation race with the wrong replica count; agents just wait.
 	isAgent := utils.FBL.AgentMode
 
-	for i := 0; i < 20; i++ {
+	// Among managers, only the designated creator normally creates; the
+	// others wait, with a liveness fallback after kvCreatorFallbackAfter of
+	// the bucket being continuously missing. The loop is sized so a
+	// non-creator can actually outwait that window (checks every 3s).
+	var nodesKVMissingSince time.Time
+
+	for i := 0; i < 40; i++ {
 		time.Sleep(3 * time.Second)
 
 		// Reconnect JetStream if needed
@@ -170,11 +214,25 @@ func ClientHeartbeatInit() {
 			continue
 		}
 
-		_, err = createKVAtTopology(nats.KeyValueConfig{
-			Bucket:  "constellation-nodes",
-			TTL:     10 * time.Second,
-			Storage: nats.MemoryStorage,
-		})
+		if nodesKVMissingSince.IsZero() {
+			nodesKVMissingSince = time.Now()
+		}
+
+		// Single-creator guard (see designatedKVCreator): non-designated
+		// managers hold off unless the creator has left the bucket missing
+		// past the liveness window.
+		creator, isCreator := designatedKVCreator()
+		if !isCreator && time.Since(nodesKVMissingSince) < kvCreatorFallbackAfter {
+			clientConfigLock.RUnlock()
+			utils.Debug("[NATS] Waiting for designated creator '" + creator + "' to create 'constellation-nodes'...")
+			continue
+		}
+		if !isCreator {
+			utils.Warn("[NATS] Designated creator '" + creator + "' appears down ('constellation-nodes' missing for " +
+				time.Since(nodesKVMissingSince).Round(time.Second).String() + "), creating the bucket from this node instead")
+		}
+
+		_, err = createKVAtTopology(nodesKVConfig())
 		if err == nil {
 			// pre-create the sticky bucket too, so agents (which never
 			// create buckets) can use it even when the manager is not a LB
@@ -217,56 +275,91 @@ func ClientHeartbeatInit() {
 	ticker := heartbeatTicker
 	heartbeatLock.Unlock()
 
-	// Watch KV for changes and refresh tunnel cache
+	// Watch KV for changes and refresh tunnel cache. Outer loop re-establishes the
+	// watcher when its stream goes away (e.g. the divergence cure deletes and
+	// recreates the bucket) instead of dying silently.
 	go func() {
-		err := ClientConnectToJS()
-		if err != nil {
-			utils.Warn("[NATS] Error connecting to JetStream for KV watcher: " + err.Error())
-			return
-		}
-
-		clientConfigLock.RLock()
-		if js == nil {
-			clientConfigLock.RUnlock()
-			utils.Warn("[NATS] JetStream context is nil for KV watcher")
-			return
-		}
-		kv, err := js.KeyValue("constellation-nodes")
-		clientConfigLock.RUnlock()
-		if err != nil {
-			utils.Warn("[NATS] Error getting KV store for watcher: " + err.Error())
-			return
-		}
-
-		watcher, err := kv.WatchAll()
-		if err != nil {
-			utils.Warn("[NATS] Error creating KV watcher: " + err.Error())
-			return
-		}
-		defer watcher.Stop()
-
-		utils.Log("[NATS] KV watcher started for tunnel cache updates")
-
 		for {
 			select {
 			case <-stopChan:
 				utils.Log("[NATS] KV watcher stopped")
 				return
-			case entry, ok := <-watcher.Updates():
-				if !ok {
-					utils.Warn("[NATS] KV watcher channel closed")
-					return
+			default:
+			}
+
+			watcher := func() nats.KeyWatcher {
+				if err := ClientConnectToJS(); err != nil {
+					utils.Debug("[NATS] Error connecting to JetStream for KV watcher: " + err.Error())
+					return nil
 				}
-				if entry == nil {
-					// nil marks end of initial values
-					continue
+				clientConfigLock.RLock()
+				defer clientConfigLock.RUnlock()
+				if js == nil {
+					utils.Debug("[NATS] JetStream context is nil for KV watcher")
+					return nil
 				}
-				GetLocalTunnelCache()
+				kv, err := js.KeyValue("constellation-nodes")
+				if err != nil {
+					utils.Debug("[NATS] Error getting KV store for watcher: " + err.Error())
+					return nil
+				}
+				w, err := kv.WatchAll()
+				if err != nil {
+					utils.Debug("[NATS] Error creating KV watcher: " + err.Error())
+					return nil
+				}
+				return w
+			}()
+
+			if watcher != nil {
+				utils.Log("[NATS] KV watcher started for tunnel cache updates")
+			watch:
+				for {
+					select {
+					case <-stopChan:
+						watcher.Stop()
+						utils.Log("[NATS] KV watcher stopped")
+						return
+					case entry, ok := <-watcher.Updates():
+						if !ok {
+							// stream deleted/recreated (divergence cure) or connection lost
+							watcher.Stop()
+							utils.Warn("[NATS] KV watcher channel closed, re-establishing...")
+							break watch
+						}
+						if entry == nil {
+							// nil marks end of initial values
+							continue
+						}
+						GetLocalTunnelCache()
+					}
+				}
+			}
+
+			select {
+			case <-stopChan:
+				utils.Log("[NATS] KV watcher stopped")
+				return
+			case <-time.After(10 * time.Second):
 			}
 		}
 	}()
 
 	go func() {
+		// selfHealMissingSince tracks how long this manager has continuously
+		// seen the bucket missing, gating the non-creator recreation fallback
+		// exactly like the init loop above.
+		var selfHealMissingSince time.Time
+
+		// Divergence detection (F8): after a partition merge JetStream can be
+		// left with two same-name incarnations of the constellation-nodes
+		// stream that never reconcile; the reliable signature is kv.Keys()
+		// returning the same key more than once. Checked every 10th tick
+		// (~20s); acted on only after 3 CONSECUTIVE positives (~1 minute) so
+		// a transient mid-merge wobble never triggers the cure.
+		tickCount := 0
+		divergedChecks := 0
+
 		for {
 			select {
 			case <-stopChan:
@@ -352,14 +445,27 @@ func ClientHeartbeatInit() {
 				kv, err := js.KeyValue("constellation-nodes")
 				if err != nil && !isAgent {
 					// self-heal: bucket missing (HA cluster still forming at
-					// init, or memory stream wiped by a cluster restart)
-					kv, err = createKVAtTopology(nats.KeyValueConfig{
-						Bucket:  "constellation-nodes",
-						TTL:     10 * time.Second,
-						Storage: nats.MemoryStorage,
-					})
-					if err == nil {
-						utils.Log("[NATS] Recreated Key-Value store 'constellation-nodes'")
+					// init, or memory stream wiped by a cluster restart).
+					// Single-creator guard (F3): every-manager recreation is
+					// how partitioned islands each grew their own diverged
+					// copy of the stream — only the designated creator heals
+					// immediately, other managers give it the liveness window
+					// before assuming it's down.
+					if selfHealMissingSince.IsZero() {
+						selfHealMissingSince = time.Now()
+					}
+					creator, isCreator := designatedKVCreator()
+					if isCreator || time.Since(selfHealMissingSince) >= kvCreatorFallbackAfter {
+						if !isCreator {
+							utils.Warn("[NATS] Designated creator '" + creator + "' appears down ('constellation-nodes' missing for " +
+								time.Since(selfHealMissingSince).Round(time.Second).String() + "), recreating the bucket from this node instead")
+						}
+						kv, err = createKVAtTopology(nodesKVConfig())
+						if err == nil {
+							utils.Log("[NATS] Recreated Key-Value store 'constellation-nodes'")
+						}
+					} else {
+						utils.Debug("[NATS] 'constellation-nodes' missing, waiting for designated creator '" + creator + "' to recreate it")
 					}
 				}
 				if err != nil {
@@ -367,16 +473,96 @@ func ClientHeartbeatInit() {
 					utils.Warn("[NATS] JetStream KV store unavailable during heartbeat, skipping cycle: " + err.Error())
 					continue
 				}
+				selfHealMissingSince = time.Time{}
 
 				_, err = kv.Put(key, heartbeatData)
-				clientConfigLock.RUnlock()
-
 				if err != nil {
 					utils.Error("[NATS] Error updating heartbeat in Key-Value store", err)
 				}
+
+				// Divergence sweep after the Put so a just-applied cure never
+				// invalidates the handle we are about to write with.
+				tickCount++
+				if tickCount%10 == 0 {
+					checkNodesKVDivergence(kv, &divergedChecks)
+				}
+
+				clientConfigLock.RUnlock()
 			}
 		}
 	}()
+}
+
+// nodesKVCureCooldown throttles the divergence cure so a divergence that survives
+// (or immediately recurs after) a cure alarms instead of thrashing the bucket.
+const nodesKVCureCooldown = 10 * time.Minute
+
+// lastNodesKVCure marks the last cure attempt; only touched from the heartbeat goroutine.
+var lastNodesKVCure time.Time
+
+// checkNodesKVDivergence detects duplicate keys from kv.Keys() — the signature of two
+// unreconciled same-name stream incarnations after a partition merge, which JetStream
+// never repairs on its own — and, after 3 consecutive positives (~1 min), has the
+// designated creator delete and recreate the bucket (safe: ephemeral heartbeat cache).
+// Must be called with clientConfigLock read-held.
+func checkNodesKVDivergence(kv nats.KeyValue, consecutive *int) {
+	keys, err := kv.Keys()
+	if err != nil {
+		// nats.ErrNoKeysFound / transport errors say nothing about
+		// divergence — count as a clean check
+		*consecutive = 0
+		return
+	}
+
+	seen := map[string]bool{}
+	dup := ""
+	for _, k := range keys {
+		if seen[k] {
+			dup = k
+			break
+		}
+		seen[k] = true
+	}
+	if dup == "" {
+		*consecutive = 0
+		return
+	}
+
+	*consecutive++
+	utils.Warn("[NATS] 'constellation-nodes' returned duplicate key '" + dup + "' (" + strconv.Itoa(*consecutive) + "/3 consecutive checks before cure)")
+	if *consecutive < 3 {
+		return
+	}
+	// reset so a failed/foreign cure re-arms a full 3-check window
+	*consecutive = 0
+
+	creator, isCreator := designatedKVCreator()
+	if !isCreator {
+		utils.Warn("[NATS] 'constellation-nodes' is DIVERGED (duplicate keys); waiting for designated creator '" + creator + "' to apply the cure")
+		return
+	}
+
+	utils.MajorError("[NATS] 'constellation-nodes' is DIVERGED: duplicate keys across merged JetStream stream incarnations "+
+		"(this is the two-scheduler-leaders / phantom-placements state). Attempting the automated cure.", nil)
+
+	// cooldown: a divergence that survives a cure should alarm, not thrash the bucket
+	if !lastNodesKVCure.IsZero() && time.Since(lastNodesKVCure) < nodesKVCureCooldown {
+		utils.MajorError("[NATS] Divergence cure already attempted "+time.Since(lastNodesKVCure).Round(time.Second).String()+
+			" ago and 'constellation-nodes' is diverged again — NOT retrying within cooldown, manual intervention likely needed", nil)
+		return
+	}
+	lastNodesKVCure = time.Now()
+
+	utils.Warn("[NATS] Attempting automated divergence cure: deleting and recreating 'constellation-nodes'")
+	if errDel := js.DeleteKeyValue("constellation-nodes"); errDel != nil {
+		utils.MajorError("[NATS] Divergence cure FAILED to delete 'constellation-nodes'", errDel)
+		return
+	}
+	if _, errCreate := createKVAtTopology(nodesKVConfig()); errCreate != nil {
+		utils.MajorError("[NATS] Divergence cure deleted 'constellation-nodes' but FAILED to recreate it (the heartbeat self-heal will retry)", errCreate)
+		return
+	}
+	utils.Log("[NATS] Divergence cure applied: 'constellation-nodes' recreated from a single seed; heartbeats repopulate it within ~2s")
 }
 
 var localTunnelCache []utils.ConstellationTunnel

@@ -121,7 +121,7 @@ func startNebula() error {
 	go handleProcessOutput(stdout, stderr, logBuffer)
 
 	// Set process state
-	NebulaStarted = true
+	NebulaStarted.Store(true)
 	NebulaHasStarted = true
 
 	// Monitor process
@@ -247,8 +247,8 @@ func monitorNebulaProcess(proc *exec.Cmd, done chan struct{}) {
 	ProcessMux.Lock()
 	if process == proc {
 		process = nil
-		NebulaStarted = false
-		NATSStarted = false
+		NebulaStarted.Store(false)
+		NATSStarted.Store(false)
 	}
 	ProcessMux.Unlock()
 
@@ -284,8 +284,8 @@ func stop() {
 		}
 	}
 
-	NebulaStarted = false
-	NATSStarted = false
+	NebulaStarted.Store(false)
+	NATSStarted.Store(false)
 	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
 	CachedDevices = map[string]utils.ConstellationDevice{}
