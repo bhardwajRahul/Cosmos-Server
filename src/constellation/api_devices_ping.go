@@ -41,15 +41,6 @@ func DevicePing(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Connect to the collection
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-		return
-	}
-	
 	currentDeviceName, err := GetCurrentDeviceName()
 	if deviceID == currentDeviceName {
 		// Respond with the ping result
@@ -63,12 +54,8 @@ func DevicePing(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	var device utils.ConstellationDevice
-
 	// Find the device by DeviceName
-	err = c.FindOne(nil, map[string]interface{}{
-		"DeviceName": deviceID,
-	}).Decode(&device)
+	device, err := utils.GetDeviceByName(deviceID, false)
 
 	if err != nil {
 		utils.Error("DevicePing: Device not found", err)

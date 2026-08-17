@@ -1,3 +1,9 @@
+## Version 0.23.00
+ - Remove Lungo, use SQLite instead
+ - Remove date base sync - use message based sync
+ - Fix a couple of Constellation DNS resolution issues
+ - Fix quirks with inverted setups (agent is private) 
+
 ## Version 0.22.35
  - Fix "JetStream Unavailable" once and for all (hopefully :p )
  - Fix rare race condition breaking config file

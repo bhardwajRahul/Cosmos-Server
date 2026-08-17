@@ -12,9 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"go.mongodb.org/mongo-driver/bson" 
-
-	lungo "github.com/256dpi/lungo"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 
@@ -130,65 +128,6 @@ func DisconnectDB() {
 		Error("DB", err)
 	}
 	client = nil
-}
-
-var embeddedClient lungo.IClient
-var embeddedClientClose func()
-
-func CloseEmbeddedDB() {
-	if embeddedClientClose != nil {
-		embeddedClientClose()
-		embeddedClientClose = nil
-	}
-	embeddedClient = nil
-}
-
-func GetEmbeddedCollection(applicationId string, collection string) (lungo.ICollection, func(), error) {
-	opts := lungo.Options{
-		Store: lungo.NewFileStore(CONFIGFOLDER + "database", 0700),
-	}
-	
-	name := os.Getenv("MONGODB_NAME"); if name == "" {
-		name = "COSMOS"
-	}
-
-	if embeddedClient != nil {
-		c := embeddedClient.Database(name).Collection(applicationId + "_" + collection)
-		return c, func() {
-			//engine.Close()
-		}, nil
-	}
-
-	// open database
-	client, engine, err := lungo.Open(nil, opts)
-	if err != nil {
-		return nil, func() {
-			//engine.Close()
-		}, err
-	}
-
-	// ensure engine is closed
-	// defer engine.Close()
-	
-	c := client.Database(name).Collection(applicationId + "_" + collection)
-
-	embeddedClient = client
-	embeddedClientClose = engine.Close
-
-	return c, func() {
-		//engine.Close()
-	}, nil
-}
-
-// CountUsers returns the number of users registered on this server.
-func CountUsers() (int64, error) {
-	c, closeDb, errCo := GetEmbeddedCollection(GetRootAppId(), "users")
-	if errCo != nil {
-		return 0, errCo
-	}
-	defer closeDb()
-
-	return c.CountDocuments(nil, map[string]interface{}{})
 }
 
 func GetCollection(applicationId string, collection string) (*mongo.Collection, error) {
@@ -314,45 +253,6 @@ func WriteToDatabase(collection *mongo.Collection, objects []map[string]interfac
 	}
 
 	return nil
-}
-
-func ListAllUsers(role string) []User { 
-	// list all users
-	c, closeDb, errCo := GetEmbeddedCollection(GetRootAppId(), "users")
-  defer closeDb()
-	if errCo != nil {
-			Error("Database Connect", errCo)
-			return []User{}
-	}
-
-	users := []User{}
-
-	condition := map[string]interface{}{}
-
-	if role == "admin" {
-		condition = map[string]interface{}{
-			"Role": 2,
-		}
-	} else if role == "user" {
-		condition = map[string]interface{}{
-			"Role": 1,
-		}
-	}
-
-	cursor, err := c.Find(nil, condition)
-	defer cursor.Close(nil)
-
-	if err != nil {
-		Error("Database: Error while getting users", err)
-		return []User{}
-	}
-	
-	if err = cursor.All(nil, &users); err != nil {
-		Error("Database: Error while decoding users", err)
-		return []User{}
-	}
-
-	return users
 }
 
 func initDB() {

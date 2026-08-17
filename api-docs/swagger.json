@@ -4,7 +4,7 @@
         "description": "REST API for Cosmos Cloud server management",
         "title": "Cosmos Server API",
         "contact": {},
-        "version": "0.22.35"
+        "version": "0.23.00-unstable001"
     },
     "basePath": "/cosmos",
     "paths": {
@@ -2546,6 +2546,49 @@
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/utils.APIResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/utils.HTTPErrorResult"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/utils.HTTPErrorResult"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/constellation/force-reform": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "HA only. Bumps the op-log epoch, drops local JetStream state, blocks the other managers and restarts NATS, leaving this node writable in formation mode so replacements can be enrolled. Does not touch the CA, keys, config or device data.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "constellation"
+                ],
+                "summary": "Force the constellation to re-form around this manager",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/utils.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/utils.HTTPErrorResult"
                         }
                     },
                     "403": {

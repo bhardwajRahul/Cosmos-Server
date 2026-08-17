@@ -140,20 +140,7 @@ func RefreshUserToken(w http.ResponseWriter, req *http.Request) ([]utils.Permiss
 		return nil, false, utils.User{}, errors.New("JWT Token not valid for this domain")
 	}
 
-	userInBase := utils.User{}
-
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-
-	if errCo != nil {
-			utils.Error("Database Connect", errCo)
-			utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-			return nil, false, utils.User{}, errCo
-	}
-
-	errDB := c.FindOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}).Decode(&userInBase)
+	userInBase, errDB := utils.GetUser(nickname)
 
 	if errDB != nil {
 		utils.Error("UserToken: User not found", errDB)

@@ -206,7 +206,7 @@ func main() {
 }
 
 // @title Cosmos Server API
-// @version 0.22.35
+// @version 0.23.00-unstable001
 // @description REST API for Cosmos Cloud server management
 // @BasePath /cosmos
 // @securityDefinitions.apikey BearerAuth
@@ -319,10 +319,15 @@ func cosmos() {
 	proxy.InitSocketShield()
 	proxy.InitUDPShield()
 
+	if err := utils.InitStore(); err != nil {
+		utils.Fatal("Cannot open auth.db", err)
+	}
+
 	if !config.NewInstall {
 		MigratePre013()
 		MigratePre014()
 		MigratePre02231()
+		MigratePre02236()
 
 		utils.CheckInternet()
 

@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 	"gopkg.in/yaml.v2"
 
 	"github.com/azukaar/cosmos-server/src/utils"
@@ -135,6 +136,14 @@ func API_NewConstellation(w http.ResponseWriter, req *http.Request) {
 		}
 		utils.SetBaseMainConfig(config)
 
+		// The creator seeds the op-log. In HA there is no JetStream at all until a
+		// second manager enrolls, so it writes straight to SQLite until the log
+		// exists; it is the only node licensed to, and the licence ends by itself
+		// once the log is created and this node is applying it.
+		if err := utils.SetFormationWriter(utils.GetOplogEpoch()); err != nil {
+			utils.Error("API_NewConstellation: failed to enter formation mode", err)
+		}
+
 		utils.TriggerEvent(
 			"cosmos.settings",
 			"Settings updated",
@@ -229,8 +238,48 @@ func ConnectToExisting(yamlBody []byte, config utils.Config) (utils.Config, erro
 		config.ConstellationConfig.IPRange = ipRange
 	}
 
+	// Start at the constellation's real op-log epoch rather than the default 1.
+	//
+	// Forward only, and deliberately so. Adopting a LOWER epoch would walk this
+	// node backwards into a log the cluster has already abandoned; the guard is
+	// what keeps a stale enrollment bundle from being a downgrade attack on a
+	// healthy node. At an equal epoch there is nothing to do, and clearing the
+	// bootstrapped marker there would force a pointless re-snapshot.
+	//
+	// The seq resets to 0 and SetOplogState clears the bootstrapped marker, so the
+	// joiner must re-materialize at this epoch before it may write — which is what
+	// we want: it has the epoch's NAME, not its contents.
+	if epoch, ok := yamlUint(configMap["cstln_oplog_epoch"]); ok && epoch > utils.GetOplogEpoch() {
+		if err := utils.SetOplogState(epoch, 0); err != nil {
+			return config, err
+		}
+		utils.Log("ConnectToExisting: joining at op-log epoch " + strconv.FormatUint(epoch, 10))
+	}
+
 	utils.Log("ConnectToExisting: connected to an external Constellation")
 	return config, nil
+}
+
+// yamlUint reads a non-negative integer out of a decoded YAML value, whose Go
+// type depends on how the number was written.
+func yamlUint(v interface{}) (uint64, bool) {
+	switch n := v.(type) {
+	case int:
+		if n >= 0 {
+			return uint64(n), true
+		}
+	case int64:
+		if n >= 0 {
+			return uint64(n), true
+		}
+	case uint64:
+		return n, true
+	case float64:
+		if n >= 0 {
+			return uint64(n), true
+		}
+	}
+	return 0, false
 }
 
 // API_ConnectToExisting godoc

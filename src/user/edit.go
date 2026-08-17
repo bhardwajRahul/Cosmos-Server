@@ -59,14 +59,6 @@ func UserEdit(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
-
 		utils.Debug("UserEdit: Edit user " + nickname)
 
 		toSet := map[string]interface{}{}
@@ -86,11 +78,7 @@ func UserEdit(w http.ResponseWriter, req *http.Request) {
 			toSet["Role"] = *request.Role
 		}
 
-		_, err := c.UpdateOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-		}, map[string]interface{}{
-			"$set": toSet,
-		})
+		err := utils.UpdateUser(nickname, toSet)
 
 		if err != nil {
 			utils.Error("UserEdit: Error while getting user", err)
@@ -101,8 +89,7 @@ func UserEdit(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "OK",
 		})
-		
-		go utils.ResyncConstellationNodes()
+
 	} else {
 		utils.Error("UserEdit: Method not allowed" + req.Method, nil)
 		utils.HTTPError(w, "Method not allowed", http.StatusMethodNotAllowed, "HTTP001")

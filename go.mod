@@ -45,6 +45,7 @@ require (
 	golang.org/x/sys v0.47.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v2 v2.4.0
+	modernc.org/sqlite v1.56.0
 )
 
 require (
@@ -262,7 +263,7 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.22 // indirect
+	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mattn/goveralls v0.0.6 // indirect
 	github.com/mholt/archives v0.1.5 // indirect
@@ -284,6 +285,7 @@ require (
 	github.com/nats-io/jwt/v2 v2.5.5 // indirect
 	github.com/nats-io/nkeys v0.4.7 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/ncw/swift/v2 v2.0.5 // indirect
 	github.com/nrdcg/auroradns v1.2.0 // indirect
 	github.com/nrdcg/bunny-go v0.1.0 // indirect
@@ -337,6 +339,7 @@ require (
 	github.com/rclone/gofakes3 v0.0.4 // indirect
 	github.com/regfish/regfish-dnsapi-go v0.1.1 // indirect
 	github.com/relvacode/iso8601 v1.7.0 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rfjakob/eme v1.1.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
@@ -444,6 +447,9 @@ require (
 	gotest.tools/v3 v3.4.0 // indirect
 	k8s.io/klog/v2 v2.80.1 // indirect
 	k8s.io/utils v0.0.0-20240102154912-e7106e64919e // indirect
+	modernc.org/libc v1.74.4 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
 	moul.io/http2curl/v2 v2.3.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 	software.sslmate.com/src/go-pkcs12 v0.7.3 // indirect

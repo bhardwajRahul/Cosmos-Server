@@ -96,6 +96,26 @@ func getDNSEntry(w http.ResponseWriter, req *http.Request) {
 // @Failure 403 {object} utils.HTTPErrorResult
 // @Failure 409 {object} utils.HTTPErrorResult
 // @Router /api/constellation/dns [post]
+// dnsPayloadWithEntries builds the FULL dns domain state from config, swapping in
+// the given custom entries. The domain is full-state, so a handler that changes
+// one entry still has to send every DNS field — sending a partial payload would
+// blank the rest on every node. The copy keeps the published slice from aliasing
+// the config's backing array.
+//
+// These handlers publish and do NOT write locally: CustomDNSEntries is entirely
+// replicated, so the apply loop is the only writer. A local write here is what
+// made these entries silently vanish on the next unrelated DNS change.
+func dnsPayloadWithEntries(config utils.Config, entries []utils.ConstellationDNSEntry) DNSPayload {
+	c := config.ConstellationConfig
+	return DNSPayload{
+		DNSPort:                 c.DNSPort,
+		DNSFallback:             c.DNSFallback,
+		DNSBlockBlacklist:       c.DNSBlockBlacklist,
+		DNSAdditionalBlocklists: c.DNSAdditionalBlocklists,
+		CustomDNSEntries:        append([]utils.ConstellationDNSEntry{}, entries...),
+	}
+}
+
 func createDNSEntry(w http.ResponseWriter, req *http.Request) {
 	if utils.CheckPermissions(w, req, utils.PERM_CONFIGURATION) != nil {
 		return
@@ -115,20 +135,27 @@ func createDNSEntry(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	entries := config.ConstellationConfig.CustomDNSEntries
 
 	for _, entry := range entries {
 		if entry.Key == newEntry.Key {
+			utils.ConfigLock.Unlock()
 			utils.HTTPError(w, "DNS entry with this key already exists", http.StatusConflict, "DNS004")
 			return
 		}
 	}
 
-	config.ConstellationConfig.CustomDNSEntries = append(config.ConstellationConfig.CustomDNSEntries, newEntry)
-	utils.SetBaseMainConfig(config)
+	payload := dnsPayloadWithEntries(config, append(entries, newEntry))
+	// Must be released before publishing: the apply loop takes ConfigLock to
+	// install the very op this call waits on, so holding it here deadlocks.
+	utils.ConfigLock.Unlock()
+
+	if err := PublishDomainOp(DomainDNS, payload); err != nil {
+		utils.HTTPStoreError(w, err, "DNS008")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.settings",
@@ -173,7 +200,6 @@ func updateDNSEntry(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	entries := config.ConstellationConfig.CustomDNSEntries
@@ -187,13 +213,19 @@ func updateDNSEntry(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if entryIndex == -1 {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "DNS entry not found", http.StatusNotFound, "DNS006")
 		return
 	}
 
 	entries[entryIndex] = updatedEntry
-	config.ConstellationConfig.CustomDNSEntries = entries
-	utils.SetBaseMainConfig(config)
+	payload := dnsPayloadWithEntries(config, entries)
+	utils.ConfigLock.Unlock()
+
+	if err := PublishDomainOp(DomainDNS, payload); err != nil {
+		utils.HTTPStoreError(w, err, "DNS008")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.settings",
@@ -227,7 +259,6 @@ func deleteDNSEntry(w http.ResponseWriter, req *http.Request) {
 	key := mux.Vars(req)["key"]
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	entries := config.ConstellationConfig.CustomDNSEntries
@@ -241,13 +272,18 @@ func deleteDNSEntry(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if entryIndex == -1 {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "DNS entry not found", http.StatusNotFound, "DNS007")
 		return
 	}
 
-	entries = append(entries[:entryIndex], entries[entryIndex+1:]...)
-	config.ConstellationConfig.CustomDNSEntries = entries
-	utils.SetBaseMainConfig(config)
+	payload := dnsPayloadWithEntries(config, append(entries[:entryIndex], entries[entryIndex+1:]...))
+	utils.ConfigLock.Unlock()
+
+	if err := PublishDomainOp(DomainDNS, payload); err != nil {
+		utils.HTTPStoreError(w, err, "DNS008")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.settings",

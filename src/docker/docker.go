@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"strconv"
 	"runtime"
 	"github.com/azukaar/cosmos-server/src/utils" 
@@ -47,17 +48,23 @@ func getIdFromName(name string) (string, error) {
 	return "", errors.New("Container not found")
 }
 
-var DockerIsConnected = false
+// race fix: atomic flag + a mutex serializing Connect (concurrent heartbeat goroutines
+// raced on this flag and on the DockerClient pointer writes below)
+var DockerIsConnected atomic.Bool
+var dockerConnectLock sync.Mutex
 
 func Connect() error {
+	dockerConnectLock.Lock()
+	defer dockerConnectLock.Unlock()
+
 	if DockerClient != nil {
 		// check if connection is still alive
 		ping, err := DockerClient.Ping(DockerContext)
 		if ping.APIVersion != "" && err == nil {
-			DockerIsConnected = true
+			DockerIsConnected.Store(true)
 			return nil
 		} else {
-			DockerIsConnected = false
+			DockerIsConnected.Store(false)
 			DockerClient = nil
 			utils.Error("Docker Connection died, will try to connect again", err)
 		}
@@ -66,7 +73,7 @@ func Connect() error {
 		ctx := context.Background()
 		client, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
-			DockerIsConnected = false
+			DockerIsConnected.Store(false)
 			return err
 		}
 
@@ -75,10 +82,10 @@ func Connect() error {
 
 		ping, err := DockerClient.Ping(DockerContext)
 		if ping.APIVersion != "" && err == nil {
-			DockerIsConnected = true
+			DockerIsConnected.Store(true)
 			utils.Log("Docker Connected")
 		} else {
-			DockerIsConnected = false
+			DockerIsConnected.Store(false)
 			utils.Error("Docker Connection - Cannot ping Daemon. Is it running?", nil)
 			return errors.New("Docker Connection - Cannot ping Daemon. Is it running?")
 		}

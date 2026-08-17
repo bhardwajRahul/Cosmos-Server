@@ -32,7 +32,6 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"github.com/Masterminds/semver"
 	"golang.org/x/crypto/bcrypt"
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // JSONEquals reports whether two values serialize to identical JSON. Handy for
@@ -86,7 +85,6 @@ var IsPro func() bool = func() bool { return false }
 
 var InitPremiumFeatures func()
 
-var ResyncConstellationNodes = func() {}
 var GetConstellationTunnelRoutes = func() []ProxyRouteConfig { return []ProxyRouteConfig{} }
 
 var LetsEncryptErrors = []string{}
@@ -1044,20 +1042,9 @@ func CompareSemver(v1, v2 string) (int, error) {
 func CheckPassword(nickname, password string) error {
 	time.Sleep(time.Duration(rand.Float64()*1)*time.Second)
 	
-	c, closeDb, errCo := GetEmbeddedCollection(GetRootAppId(), "users")
-	defer closeDb()
-	if errCo != nil {
-			return errCo
-	}
+	user, err3 := GetUser(nickname)
 
-	user := User{}
-
-	err3 := c.FindOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}).Decode(&user)
-
-	
-	if err3 == mongo.ErrNoDocuments {
+	if errors.Is(err3, ErrNotFound) {
 		bcrypt.CompareHashAndPassword([]byte("$2a$14$4nzsVwEnR3.jEbMTME7kqeCo4gMgR/Tuk7ivNExvXjr73nKvLgHka"), []byte("dummyPassword"))
 		return err3
 	} else if err3 != nil {
@@ -1406,8 +1393,3 @@ func SetFileLastModifiedTime(path string, modTime int64) error {
 	return nil
 }
 
-func TouchDatabase() error {
-	dbPath := CONFIGFOLDER + "database"
-	now := time.Now()
-	return os.Chtimes(dbPath, now, now)
-}

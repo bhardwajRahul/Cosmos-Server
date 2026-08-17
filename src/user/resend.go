@@ -3,10 +3,10 @@ package user
 import (
 	"net/http"
 	"encoding/json"
-	"go.mongodb.org/mongo-driver/mongo"
+	"errors"
 	"time"
 
-	"github.com/azukaar/cosmos-server/src/utils" 
+	"github.com/azukaar/cosmos-server/src/utils"
 )
 
 type InviteRequestJSON struct {
@@ -47,21 +47,9 @@ func UserResendInviteLink(w http.ResponseWriter, req *http.Request) {
 
 		utils.Debug("Re-Sending an invite to " + nickname)
 		
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
+		user, err := utils.GetUser(nickname)
 
-		user := utils.User{}
-
-		err := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-		}).Decode(&user)
-
-		if err == mongo.ErrNoDocuments {
+		if errors.Is(err, utils.ErrNotFound) {
 			utils.Error("UserInvite: User not found", err)
 			utils.HTTPError(w, "User Send Invite Error", http.StatusNotFound, "US001")
 			return
@@ -76,13 +64,9 @@ func UserResendInviteLink(w http.ResponseWriter, req *http.Request) {
 			utils.Debug(RegisterKey)
 			utils.Debug(RegisterKeyExp.String())
 
-			_, err := c.UpdateOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-			}, map[string]interface{}{
-				"$set": map[string]interface{}{
-					"RegisterKeyExp": RegisterKeyExp,
-					"RegisterKey": RegisterKey,
-				},
+			err := utils.UpdateUser(nickname, map[string]interface{}{
+				"RegisterKeyExp": RegisterKeyExp,
+				"RegisterKey": RegisterKey,
 			})
 
 			if err != nil {

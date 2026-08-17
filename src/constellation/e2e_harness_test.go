@@ -53,6 +53,16 @@ type e2eCluster struct {
 	root  string
 	ha    bool
 	nodes map[string]*e2eNode
+
+	// kept from bootstrap so nodes provisioned later (enrollVia) get the same
+	// self-signed cert as the rest of the cluster's NATS TLS listeners
+	tlsCert string
+	tlsKey  string
+
+	// each node's NATS password, by device name. Fencing scenarios need to dial a
+	// survivor with a fenced node's identity, which is the only direct way to ask
+	// whether its credentials are actually dead.
+	apiKeys map[string]string
 }
 
 func (n *e2eNode) controlURL() string {
@@ -71,21 +81,13 @@ func newE2ECluster(t *testing.T, ha bool, specs []e2eNodeSpec) *e2eCluster {
 		t.Fatal("e2e: first spec must be the creator (manager + lighthouse)")
 	}
 
-	c := &e2eCluster{t: t, root: t.TempDir(), ha: ha, nodes: map[string]*e2eNode{}}
+	requireFreeControlPorts(t, specs)
+
+	c := &e2eCluster{t: t, root: t.TempDir(), ha: ha,
+		nodes: map[string]*e2eNode{}, apiKeys: map[string]string{}}
 
 	for _, s := range specs {
-		n := &e2eNode{
-			spec:      s,
-			ip:        fmt.Sprintf("127.0.1.%d", s.Octet),
-			configDir: filepath.Join(c.root, s.Name, "config") + "/",
-			workDir:   filepath.Join(c.root, s.Name, "work"),
-			logPath:   filepath.Join(c.root, s.Name, "node.log"),
-		}
-		if err := os.MkdirAll(n.configDir, 0755); err != nil {
-			t.Fatal("e2e: mkdir config:", err)
-		}
-		writeFakeNebulaWorkDir(t, n.workDir)
-		c.nodes[s.Name] = n
+		c.provision(s)
 	}
 
 	c.bootstrap(specs)
@@ -94,6 +96,8 @@ func newE2ECluster(t *testing.T, ha bool, specs []e2eNodeSpec) *e2eCluster {
 		for _, n := range c.nodes {
 			n.killSilent()
 		}
+		// after the nodes, because a live node would just respawn its stub
+		c.reapNebulaStubs()
 		c.scanLogs()
 		if t.Failed() {
 			c.preserveLogs()
@@ -101,6 +105,92 @@ func newE2ECluster(t *testing.T, ha bool, specs []e2eNodeSpec) *e2eCluster {
 	})
 
 	return c
+}
+
+// provision lays down a node's directories and fake nebula work dir. It does
+// NOT enroll the node — bootstrap does that for the initial set, enrollVia for
+// nodes that join a running cluster later.
+func (c *e2eCluster) provision(s e2eNodeSpec) *e2eNode {
+	c.t.Helper()
+	n := &e2eNode{
+		spec:      s,
+		ip:        fmt.Sprintf("127.0.1.%d", s.Octet),
+		configDir: filepath.Join(c.root, s.Name, "config") + "/",
+		workDir:   filepath.Join(c.root, s.Name, "work"),
+		logPath:   filepath.Join(c.root, s.Name, "node.log"),
+	}
+	if err := os.MkdirAll(n.configDir, 0755); err != nil {
+		c.t.Fatal("e2e: mkdir config:", err)
+	}
+	writeFakeNebulaWorkDir(c.t, n.workDir)
+	c.nodes[s.Name] = n
+	return n
+}
+
+// enrollVia provisions a brand-new node and enrolls it through a LIVE node's
+// control API, rather than in the parent process the way bootstrap does.
+//
+// This is the only faithful way to test a replacement manager joining after a
+// force-reform: enrollment has to run on the survivor, in formation mode,
+// against the survivor's own post-reform device table and its new epoch.
+// Enrolling in the parent would bypass exactly the code the scenario is about.
+func (c *e2eCluster) enrollVia(enroller string, s e2eNodeSpec) {
+	c.t.Helper()
+
+	if _, exists := c.nodes[s.Name]; exists {
+		c.t.Fatal("e2e: node already provisioned: " + s.Name)
+	}
+	if c.tlsCert == "" {
+		c.t.Fatal("e2e: cluster has no stored TLS cert; bootstrap did not run")
+	}
+
+	// Retried rather than one-shot: the enroller may be inside a mesh bounce from
+	// its own previous write. Every attempt is logged, so an enrollment that only
+	// works on the fourth try still shows up as a problem instead of being hidden.
+	var out map[string]interface{}
+	var err error
+	deadline := time.Now().Add(90 * time.Second)
+	for attempt := 1; ; attempt++ {
+		out, err = c.node(enroller).post("/enroll", map[string]interface{}{
+			"DeviceName":   s.Name,
+			"IP":           fmt.Sprintf("127.0.1.%d", s.Octet),
+			"CosmosNode":   s.CosmosNode,
+			"IsLighthouse": s.Lighthouse,
+		})
+		if err == nil {
+			if attempt > 1 {
+				c.t.Logf("e2e: enroll %s via %s succeeded on attempt %d", s.Name, enroller, attempt)
+			}
+			break
+		}
+		c.t.Logf("e2e: enroll %s via %s attempt %d failed: %v", s.Name, enroller, attempt, err)
+		if time.Now().After(deadline) {
+			c.t.Fatalf("e2e: enroll %s via %s: %v", s.Name, enroller, err)
+		}
+		time.Sleep(3 * time.Second)
+	}
+	yml, _ := out["nebulaYml"].(string)
+	if yml == "" {
+		c.t.Fatalf("e2e: enroll %s via %s returned no nebula config", s.Name, enroller)
+	}
+	if key, ok := out["apiKey"].(string); ok {
+		c.apiKeys[s.Name] = key
+	}
+
+	n := c.provision(s)
+	if err := os.WriteFile(n.configDir+"nebula.yml", []byte(yml), 0600); err != nil {
+		c.t.Fatal("e2e: write enrolled nebula.yml:", err)
+	}
+
+	// the node's own main config, written the same way bootstrap writes the
+	// non-creator ones
+	prevFolder := utils.CONFIGFOLDER
+	defer func() {
+		utils.CONFIGFOLDER = prevFolder
+		utils.CloseStore()
+	}()
+	utils.CONFIGFOLDER = n.configDir
+	utils.SetBaseMainConfig(c.nodeConfig(s, c.tlsCert, c.tlsKey))
 }
 
 // bootstrap runs the creator-side enrollment inside the parent test process:
@@ -113,9 +203,12 @@ func (c *e2eCluster) bootstrap(specs []e2eNodeSpec) {
 	prevFolder := utils.CONFIGFOLDER
 	prevFBL := utils.FBL
 	defer func() {
-		utils.CloseEmbeddedDB()
 		utils.CONFIGFOLDER = prevFolder
 		utils.FBL = prevFBL
+		// close with no reopen (faithful port of the old CloseEmbeddedDB): the parent
+		// has no use for a store after bootstrap, and prevFolder is the package default
+		// /var/lib/cosmos/, which does not exist under test
+		utils.CloseStore()
 		resetConstellationGlobals()
 	}()
 
@@ -136,10 +229,29 @@ func (c *e2eCluster) bootstrap(specs []e2eNodeSpec) {
 	if err != nil {
 		t.Fatal("e2e: generate TLS cert:", err)
 	}
+	c.tlsCert, c.tlsKey = tlsCert, tlsKey
 
 	creator := c.nodes[specs[0].Name]
 	utils.CONFIGFOLDER = creator.configDir
 	utils.SetBaseMainConfig(c.nodeConfig(specs[0], tlsCert, tlsKey))
+
+	// DeviceCreate below writes through the store, which must point at the creator dir
+	if err := utils.InitStore(); err != nil {
+		t.Fatal("e2e: InitStore creator:", err)
+	}
+
+	// The creator takes the formation write licence, exactly as the real creation
+	// handler does (API_NewConstellation, api_nebula_connect.go:142). This harness
+	// bootstraps by calling DeviceCreate in the parent process instead of going
+	// through that handler, so it has to grant the licence itself — and it is not
+	// optional bookkeeping: ensureOplogStream refuses to create a stream for a node
+	// that is neither the formation writer nor already materialized from the log
+	// (oplog.go:330-336), so without this NO node is licensed to create the op-log
+	// and every node waits for a formation writer that does not exist. Observed as
+	// a whole HA cluster sitting at e1/0 with divergent dumps and no stream.
+	if err := utils.SetFormationWriter(utils.GetOplogEpoch()); err != nil {
+		t.Fatal("e2e: set formation writer on the creator:", err)
+	}
 
 	InitConfig()
 	if err := generateNebulaCACert("cosmos-e2e"); err != nil {
@@ -168,6 +280,7 @@ func (c *e2eCluster) bootstrap(specs []e2eNodeSpec) {
 			t.Fatal("e2e: DeviceCreate "+s.Name+":", err)
 		}
 		created[s.Name] = enrolled{cert: cert, key: key, req: req}
+		c.apiKeys[s.Name] = req.APIKey
 	}
 
 	capki, err := getCApki()

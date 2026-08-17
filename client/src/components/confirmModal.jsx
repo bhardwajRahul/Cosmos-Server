@@ -10,7 +10,9 @@ import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-const ConfirmModal = ({ callback, label, content, startIcon }) => {
+// variant/color were already being passed by call sites but ignored; they now
+// apply, with the previous hardcoded values as the defaults.
+const ConfirmModal = ({ callback, label, content, startIcon, variant = 'outlined', color = 'warning' }) => {
     const { t } = useTranslation();
     const [openModal, setOpenModal] = useState(false);
 
@@ -36,8 +38,8 @@ const ConfirmModal = ({ callback, label, content, startIcon }) => {
 
       <Button
           disableElevation
-          variant="outlined"
-          color="warning"
+          variant={variant}
+          color={color}
           startIcon={startIcon}
           onClick={() => {
               setOpenModal(true);

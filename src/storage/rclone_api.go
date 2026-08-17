@@ -127,9 +127,13 @@ func API_RClone_ConfigCreate(w http.ResponseWriter, req *http.Request) {
 	}
 
 	config.SaveConfig()
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
-	go InitRemoteStorage()
+
+	// rclone.conf is replicated as a file domain; the apply loop writes it here
+	// too and fires the remount, so this handler must not do either itself
+	if err := constellation.PublishFileDomain(constellation.DomainFileRclone, "rclone.conf"); err != nil {
+		utils.HTTPStoreError(w, err, "RCL010")
+		return
+	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "OK"})
 }
@@ -177,9 +181,13 @@ func API_RClone_ConfigUpdate(w http.ResponseWriter, req *http.Request) {
 	}
 
 	config.SaveConfig()
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
-	go InitRemoteStorage()
+
+	// rclone.conf is replicated as a file domain; the apply loop writes it here
+	// too and fires the remount, so this handler must not do either itself
+	if err := constellation.PublishFileDomain(constellation.DomainFileRclone, "rclone.conf"); err != nil {
+		utils.HTTPStoreError(w, err, "RCL010")
+		return
+	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "OK"})
 }
@@ -213,9 +221,13 @@ func API_RClone_ConfigDelete(w http.ResponseWriter, req *http.Request) {
 
 	config.DeleteRemote(payload.Name)
 	config.SaveConfig()
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
-	go InitRemoteStorage()
+
+	// rclone.conf is replicated as a file domain; the apply loop writes it here
+	// too and fires the remount, so this handler must not do either itself
+	if err := constellation.PublishFileDomain(constellation.DomainFileRclone, "rclone.conf"); err != nil {
+		utils.HTTPStoreError(w, err, "RCL010")
+		return
+	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "OK"})
 }

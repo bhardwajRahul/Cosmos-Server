@@ -1,9 +1,7 @@
 package constellation
 
 import (
-	"encoding/json"
 	"errors"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -260,23 +258,3 @@ func TestUnitRefreshDeviceCacheInvalidatesStaleCurrentDevice(t *testing.T) {
 	}
 }
 
-func TestUnitSyncPayloadNoRestartWireCompat(t *testing.T) {
-	// payloads from old builds lack the field and must decode to restart (false)
-	var legacy SyncPayload
-	if err := json.Unmarshal([]byte(`{"database":"","lastEdited":1}`), &legacy); err != nil {
-		t.Fatal(err)
-	}
-	if legacy.NoRestart {
-		t.Error("legacy payload decoded NoRestart = true, want false (restart)")
-	}
-
-	// the flag round-trips when set, and omitempty keeps default payloads unchanged
-	on, _ := json.Marshal(SyncPayload{NoRestart: true})
-	if !strings.Contains(string(on), `"noRestart":true`) {
-		t.Errorf("NoRestart=true not serialized: %s", on)
-	}
-	off, _ := json.Marshal(SyncPayload{})
-	if strings.Contains(string(off), "noRestart") {
-		t.Errorf("default payload should omit noRestart: %s", off)
-	}
-}

@@ -16,7 +16,7 @@ import { isDomain } from "../../utils/indexs";
 import ConfirmModal from "../../components/confirmModal";
 import UploadButtons from "../../components/fileUpload";
 import { useClientInfos } from "../../utils/hooks";
-import { PERM_RESOURCES } from "../../utils/permissions";
+import { PERM_ADMIN, PERM_RESOURCES } from "../../utils/permissions";
 import PermissionGuard from "../../components/permissionGuard";
 import { Trans, useTranslation } from 'react-i18next';
 import ResyncDeviceModal from "./resyncDevice";
@@ -505,6 +505,23 @@ export const ConstellationVPN = ({ freeVersion }) => {
                     refreshConfig();
                   }}
                 />
+                {/* HA only: the way out of a quorum this network can no longer
+                    recover on its own. Guarded on PERM_ADMIN to match the
+                    endpoint — the surrounding block is PERM_RESOURCES, which
+                    would show a resources operator a destructive button that
+                    only ever 403s. */}
+                {natsInfo?.haMode && <PermissionGuard permission={PERM_ADMIN}>
+                  <ConfirmModal
+                    variant="outlined"
+                    color="error"
+                    label={t('mgmt.constellation.forceReformLabel')}
+                    content={t('mgmt.constellation.forceReformText')}
+                    callback={async () => {
+                      await API.constellation.forceReform();
+                      refreshConfig();
+                    }}
+                  />
+                </PermissionGuard>}
               </Stack>
             </Box>
           </PermissionGuard>}

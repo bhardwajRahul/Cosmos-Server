@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"testing"
 	"time"
 
@@ -42,6 +43,10 @@ func TestE2ENodeMain(t *testing.T) {
 
 	utils.LoadBaseMainConfig(utils.ReadConfigFromFile())
 
+	if err := utils.InitStore(); err != nil {
+		t.Fatal("e2e node: InitStore:", err)
+	}
+
 	// control API first, so the parent can observe startup states too
 	quit := make(chan struct{})
 	go e2eControlServer(os.Getenv("COSMOS_E2E_CONTROL_ADDR"), quit)
@@ -54,24 +59,32 @@ func TestE2ENodeMain(t *testing.T) {
 func e2eControlServer(addr string, quit chan struct{}) {
 	mux := http.NewServeMux()
 
-	writeJSON := func(w http.ResponseWriter, code int, v interface{}) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(v)
-	}
-	fail := func(w http.ResponseWriter, err error) {
-		writeJSON(w, 500, map[string]interface{}{"error": err.Error()})
-	}
+	// defined at package level in e2e_control_oplog_test.go so handlers can live
+	// in either file
+	writeJSON := e2eWriteJSON
+	fail := e2eFail
+	failStore := e2eFailStore
+
+	e2eRegisterOplogControl(mux)
 
 	// fast, no network calls — safe to poll aggressively
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		name, _ := GetCurrentDeviceName()
 		leafs := -1
 		routes := -1
-		if ns != nil {
-			leafs = ns.NumLeafNodes()
-			routes = ns.NumRoutes()
+		if srv := ns.Load(); srv != nil {
+			leafs = srv.NumLeafNodes()
+			routes = srv.NumRoutes()
 		}
+		// nebulaPid changing across an op is how the parent tells a mesh restart
+		// from a plain device-cache refresh
+		nebulaPid := -1
+		ProcessMux.Lock()
+		if process != nil && process.Process != nil {
+			nebulaPid = process.Process.Pid
+		}
+		ProcessMux.Unlock()
+
 		writeJSON(w, 200, map[string]interface{}{
 			"name":            name,
 			"agent":           utils.FBL.AgentMode,
@@ -82,6 +95,7 @@ func e2eControlServer(addr string, quit chan struct{}) {
 			"goroutines":      runtime.NumGoroutine(),
 			"leafs":           leafs,
 			"routes":          routes,
+			"nebulaPid":       nebulaPid,
 		})
 	})
 
@@ -104,12 +118,13 @@ func e2eControlServer(addr string, quit chan struct{}) {
 
 	// raw route/leaf state from the embedded server's monitoring API
 	mux.HandleFunc("/routez", func(w http.ResponseWriter, r *http.Request) {
-		if ns == nil {
+		srv := ns.Load()
+		if srv == nil {
 			fail(w, errNoJS)
 			return
 		}
-		routez, errR := ns.Routez(nil)
-		leafz, errL := ns.Leafz(nil)
+		routez, errR := srv.Routez(nil)
+		leafz, errL := srv.Leafz(nil)
 		if errR != nil || errL != nil {
 			writeJSON(w, 500, map[string]interface{}{"routezErr": fmt.Sprint(errR), "leafzErr": fmt.Sprint(errL)})
 			return
@@ -156,7 +171,7 @@ func e2eControlServer(addr string, quit chan struct{}) {
 			})
 		}
 		writeJSON(w, 200, map[string]interface{}{
-			"hash":    e2eFileHash(utils.CONFIGFOLDER + "database"),
+			"hash":    e2eDumpHash(),
 			"devices": list,
 		})
 	})
@@ -188,63 +203,90 @@ func e2eControlServer(addr string, quit chan struct{}) {
 		writeJSON(w, 200, map[string]interface{}{"ok": true})
 	})
 
-	mux.HandleFunc("/sync-push", func(w http.ResponseWriter, r *http.Request) {
-		SendNewDBSyncMessage()
-		writeJSON(w, 200, map[string]interface{}{"ok": true})
+	// op-log position: nodes have converged when their dumps AND their
+	// sequences match, which is stricter than matching dumps alone
+	mux.HandleFunc("/oplog", func(w http.ResponseWriter, r *http.Request) {
+		st := GetNATSStatus()
+		writeJSON(w, 200, map[string]interface{}{
+			"attached":       st.OplogAttached,
+			"halted":         st.OplogHalted,
+			"haltReason":     st.OplogHaltReason,
+			"epoch":          st.OplogEpoch,
+			"seq":            st.OplogSeq,
+			"configWritable": st.ConfigWritable,
+			// formation is the one state where a write may legally bypass the log,
+			// so a scenario has to be able to tell "writable because it publishes"
+			// from "writable because it is the formation writer"
+			"formationWriter": utils.IsFormationWriter(),
+			"streamSeen":      oplogStreamSeen.Load(),
+		})
 	})
 
-	mux.HandleFunc("/sync-request", func(w http.ResponseWriter, r *http.Request) {
-		SendRequestSyncMessage()
-		writeJSON(w, 200, map[string]interface{}{"ok": true})
-	})
-
-	// edit-device mutates the local device DB the way the edit API does,
-	// bumping the database file mtime that drives sync conflict resolution
-	mux.HandleFunc("/edit-device", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ DeviceName, Nickname string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			fail(w, err)
-			return
-		}
-		c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		_, err = c.UpdateOne(nil,
-			map[string]interface{}{"DeviceName": body.DeviceName},
-			map[string]interface{}{"$set": map[string]interface{}{"Nickname": body.Nickname}})
-		closeDb()
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		writeJSON(w, 200, map[string]interface{}{"ok": true})
-	})
-
-	mux.HandleFunc("/block-device", func(w http.ResponseWriter, r *http.Request) {
+	// set-device-fields drives the reaction diff: Tags/Nickname must NOT bounce
+	// nebula, IP/Blocked must. Pair it with nebulaPid from /status — asserting only
+	// "pid unchanged after a tag edit" would also pass if the pre-image were always
+	// empty, which silently degrades EVERY topology change to a cache refresh.
+	mux.HandleFunc("/set-device-fields", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			DeviceName string
-			Blocked    bool
+			Tags       []string
+			IP         string
+			Nickname   string
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			fail(w, err)
 			return
 		}
-		c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
+		fields := map[string]interface{}{}
+		if body.Tags != nil {
+			fields["Tags"] = body.Tags
+		}
+		if body.IP != "" {
+			fields["IP"] = body.IP
+		}
+		if body.Nickname != "" {
+			fields["Nickname"] = body.Nickname
+		}
+		if len(fields) == 0 {
+			fail(w, errors.New("no fields given"))
+			return
+		}
+		err := utils.UpdateDevices(map[string]interface{}{"DeviceName": body.DeviceName}, fields)
 		if err != nil {
+			failStore(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "status": 200})
+	})
+
+	// domain-op exercises kind:"domain" — otherwise the entire domain-registry path
+	// is untested end to end. api_tokens is the cheapest domain to set and read back.
+	mux.HandleFunc("/domain-op", func(w http.ResponseWriter, r *http.Request) {
+		var body struct{ Tokens []string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			fail(w, err)
 			return
 		}
-		_, err = c.UpdateOne(nil,
-			map[string]interface{}{"DeviceName": body.DeviceName},
-			map[string]interface{}{"$set": map[string]interface{}{"Blocked": body.Blocked}})
-		closeDb()
-		if err != nil {
-			fail(w, err)
+		tokens := map[string]utils.APITokenConfig{}
+		for _, name := range body.Tokens {
+			tokens[name] = utils.APITokenConfig{Name: name, Description: "e2e"}
+		}
+		if err := PublishDomainOp(DomainAPITokens, tokens); err != nil {
+			failStore(w, err)
 			return
 		}
-		writeJSON(w, 200, map[string]interface{}{"ok": true})
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "status": 200})
+	})
+
+	// domain-state reads the applied domain back, so a domain op's propagation is
+	// observable the way /db makes a table op's propagation observable.
+	mux.HandleFunc("/domain-state", func(w http.ResponseWriter, r *http.Request) {
+		names := []string{}
+		for name := range utils.GetMainConfig().APITokens {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		writeJSON(w, 200, map[string]interface{}{"apiTokens": names})
 	})
 
 	mux.HandleFunc("/restart", func(w http.ResponseWriter, r *http.Request) {

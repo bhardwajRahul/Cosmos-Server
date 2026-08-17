@@ -13,7 +13,6 @@ var NebulaHasStarted = false
 var NATSStarted atomic.Bool
 var CachedDeviceNames = map[string]string{}
 var CachedDevices = map[string]utils.ConstellationDevice{}
-var needToSyncCA = false
 
 // deviceCacheMux guards cachedCurrentDevice, CachedDevices and CachedDeviceNames,
 // rebuilt from goroutines while readers run concurrently. Writers must REPLACE
@@ -27,33 +26,15 @@ func deviceCacheSnapshot() (map[string]utils.ConstellationDevice, map[string]str
 	return CachedDevices, CachedDeviceNames
 }
 
-func resyncConstellationNodes() {
-	SendNewDBSyncMessage()
-}
-
 // refreshDeviceCache rebuilds CachedDevices/CachedDeviceNames from the devices collection
 // and invalidates cachedCurrentDevice. Called at Init and whenever the on-disk database
 // changed without a full restart (e.g. a no-restart sync from a tag-only device edit).
 func refreshDeviceCache() {
 	utils.Log("Constellation: populating device names cache...")
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
 
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		return
-	}
-
-	cursor, err := c.Find(nil, map[string]interface{}{})
+	devices, err := utils.ListDevices(true)
 	if err != nil {
 		utils.Error("DeviceList: Error fetching devices", err)
-		return
-	}
-	defer cursor.Close(nil)
-
-	var devices []utils.ConstellationDevice
-	if err = cursor.All(nil, &devices); err != nil {
-		utils.Error("DeviceList: Error decoding devices", err)
 		return
 	}
 
@@ -190,7 +171,8 @@ func Init() {
 
 	utils.IsConstellationIP = IsConstellationIP
 
-	utils.ResyncConstellationNodes = resyncConstellationNodes
+	// every user/device write in the product goes through here from now on
+	utils.SetPublishOpHook(publishOp)
 	utils.GetConstellationTunnelRoutes = getConstellationTunnelRoutes
 
 	NebulaStarted.Store(false)

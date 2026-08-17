@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/azukaar/cosmos-server/src/constellation"
 	"github.com/azukaar/cosmos-server/src/utils"
 	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
@@ -130,13 +131,13 @@ func createOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	clients := config.OpenIDClients
 
 	for _, client := range clients {
 		if client.ID == newClient.ID {
+			utils.ConfigLock.Unlock()
 			utils.HTTPError(w, "OpenID client with this ID already exists", http.StatusConflict, "OID004")
 			return
 		}
@@ -146,14 +147,21 @@ func createOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	plainSecret := utils.GenerateRandomString(32)
 	hashedSecret, err := bcrypt.GenerateFromPassword([]byte(plainSecret), bcrypt.DefaultCost)
 	if err != nil {
+		utils.ConfigLock.Unlock()
 		utils.Error("CreateOpenIDClient: Failed to hash secret", err)
 		utils.HTTPError(w, "Failed to generate secret", http.StatusInternalServerError, "OID008")
 		return
 	}
 	newClient.Secret = string(hashedSecret)
 
-	config.OpenIDClients = append(config.OpenIDClients, newClient)
-	utils.SetBaseMainConfig(config)
+	clients = append(clients, newClient)
+	// released before publishing: the apply loop takes ConfigLock to install this
+	utils.ConfigLock.Unlock()
+
+	if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, clients); err != nil {
+		utils.HTTPStoreError(w, err, "OID009")
+		return
+	}
 
 	utils.Log("OpenID client created: " + newClient.ID)
 
@@ -207,7 +215,6 @@ func updateOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	clients := config.OpenIDClients
@@ -221,13 +228,18 @@ func updateOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if clientIndex == -1 {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "OpenID client not found", http.StatusNotFound, "OID006")
 		return
 	}
 
 	clients[clientIndex] = updatedClient
-	config.OpenIDClients = clients
-	utils.SetBaseMainConfig(config)
+	utils.ConfigLock.Unlock()
+
+	if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, clients); err != nil {
+		utils.HTTPStoreError(w, err, "OID009")
+		return
+	}
 
 	utils.Log("OpenID client updated: " + id)
 
@@ -265,7 +277,6 @@ func deleteOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	id := mux.Vars(req)["id"]
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 	clients := config.OpenIDClients
@@ -279,14 +290,19 @@ func deleteOpenIDClient(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if clientIndex == -1 {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "OpenID client not found", http.StatusNotFound, "OID007")
 		return
 	}
 
 	clients = append(clients[:clientIndex], clients[clientIndex+1:]...)
-	config.OpenIDClients = clients
-	utils.SetBaseMainConfig(config)
-	
+	utils.ConfigLock.Unlock()
+
+	if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, clients); err != nil {
+		utils.HTTPStoreError(w, err, "OID009")
+		return
+	}
+
 	utils.Log("OpenID client deleted: " + id)
 
 	utils.TriggerEvent(

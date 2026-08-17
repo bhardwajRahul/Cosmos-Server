@@ -53,20 +53,12 @@ func ResetPassword(w http.ResponseWriter, req *http.Request) {
 
 		utils.Debug("Sending password reset to: " + nickname)
 		
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
+		user, err := utils.GetUser(nickname)
+		// email mismatch behaves like not-found, matching the old compound filter
+		if err == nil && user.Email != request.Email {
+			user = utils.User{}
+			err = utils.ErrNotFound
 		}
-
-		user := utils.User{}
-
-		err := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-			"Email": request.Email,
-		}).Decode(&user)
 
 		if err != nil {
 			utils.Error("PasswordReset: Error while finding user", err)
@@ -79,13 +71,9 @@ func ResetPassword(w http.ResponseWriter, req *http.Request) {
 			utils.Debug(RegisterKey)
 			utils.Debug(RegisterKeyExp.String())
 
-			_, err := c.UpdateOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-			}, map[string]interface{}{
-				"$set": map[string]interface{}{
-					"RegisterKeyExp": RegisterKeyExp,
-					"RegisterKey": RegisterKey,
-				},
+			err := utils.UpdateUser(nickname, map[string]interface{}{
+				"RegisterKeyExp": RegisterKeyExp,
+				"RegisterKey": RegisterKey,
 			})
 
 			if err != nil {
@@ -117,8 +105,7 @@ func ResetPassword(w http.ResponseWriter, req *http.Request) {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status": "OK",
 			})
-			
-			go utils.ResyncConstellationNodes()
+
 		}
 	} else {
 		utils.Error("PasswordReset: Method not allowed" + req.Method, nil)

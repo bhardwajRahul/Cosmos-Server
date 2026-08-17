@@ -28,48 +28,27 @@ func DeviceList(w http.ResponseWriter, req *http.Request) {
 	}
 
 	isAdmin := utils.HasPermission(req, utils.PERM_RESOURCES_READ)
-	
-	// Connect to the collection
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-    defer closeDb()
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-		return
-	}
-	
+
 	var devices []utils.ConstellationDevice
-	
+
 	// Check if user is an admin
 	if isAdmin {
 		// If admin, get all devices
-		cursor, err := c.Find(nil, map[string]interface{}{})
+		var err error
+		devices, err = utils.ListDevices(true)
 		if err != nil {
 			utils.Error("DeviceList: Error fetching devices", err)
 			utils.HTTPError(w, "Error fetching devices", http.StatusInternalServerError, "DL001")
 			return
 		}
-		defer cursor.Close(nil)
-
-		if err = cursor.All(nil, &devices); err != nil {
-			utils.Error("DeviceList: Error decoding devices", err)
-			utils.HTTPError(w, "Error decoding devices", http.StatusInternalServerError, "DL002")
-			return
-		}
 	} else {
 		// If not admin, get user's devices based on their nickname
 		nickname := utils.GetAuthContext(req).Nickname
-		cursor, err := c.Find(nil, map[string]interface{}{"Nickname": nickname})
+		var err error
+		devices, err = utils.FindDevices(map[string]interface{}{"Nickname": nickname})
 		if err != nil {
 			utils.Error("DeviceList: Error fetching devices", err)
 			utils.HTTPError(w, "Error fetching devices", http.StatusInternalServerError, "DL003")
-			return
-		}
-		defer cursor.Close(nil)
-
-		if err = cursor.All(nil, &devices); err != nil {
-			utils.Error("DeviceList: Error decoding devices", err)
-			utils.HTTPError(w, "Error decoding devices", http.StatusInternalServerError, "DL004")
 			return
 		}
 	}

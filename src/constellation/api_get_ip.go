@@ -54,30 +54,13 @@ func incrementIP(ip net.IP) {
 
 // GetNextAvailableIP fetches all used IPs from the database and returns the next available IP in the given CIDR range
 func GetNextAvailableIP(cidr string) string {
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-
-	if errCo != nil {
-		utils.Error("GetNextAvailableIP: Database Connect", errCo)
-		return ""
-	}
-
-	cursor, err := c.Find(nil, map[string]interface{}{
-		"Blocked": false,
-	})
+	devices, err := utils.ListDevices(false)
 	if err != nil {
 		utils.Error("GetNextAvailableIP: Error fetching devices", err)
 		return ""
 	}
-	defer cursor.Close(nil)
 
 	usedIPs := make(map[string]bool)
-	var devices []utils.ConstellationDevice
-	if err = cursor.All(nil, &devices); err != nil {
-		utils.Error("GetNextAvailableIP: Error decoding devices", err)
-		return ""
-	}
-
 	for _, device := range devices {
 		usedIPs[device.IP] = true
 	}

@@ -98,6 +98,16 @@ export default function createConstellationAPI(apiFetch: ApiFetch) {
     }))
   }
 
+  // HA only: re-form the constellation around this manager after a lost quorum
+  function forceReform() {
+    return wrap(apiFetch('/cosmos/api/constellation/force-reform', {
+      method: 'POST',
+      headers: {
+          'Content-Type': 'application/json'
+      }
+    }))
+  }
+
   function getConfig() {
     return wrap(apiFetch('/cosmos/api/constellation/config', {
       method: 'GET',
@@ -230,6 +240,7 @@ export default function createConstellationAPI(apiFetch: ApiFetch) {
     getConfig,
     getLogs,
     reset,
+    forceReform,
     connect,
     block,
     ping,

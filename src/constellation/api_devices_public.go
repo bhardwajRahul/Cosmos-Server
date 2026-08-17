@@ -43,19 +43,10 @@ func DevicePublicList(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Connect to the collection
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-		return
-	}
-
 	utils.Log("DevicePublicList: Fetching devices with API key")
 
-	// Find all non-blocked devices that match the API key
-	cursor, err := c.Find(nil, map[string]interface{}{
+	// Find all non-blocked devices
+	devices, err := utils.FindDevices(map[string]interface{}{
 		"Blocked": false,
 		"Invisible": false,
 	})
@@ -63,14 +54,6 @@ func DevicePublicList(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		utils.Error("DevicePublicList: Error fetching devices", err)
 		utils.HTTPError(w, "Error fetching devices", http.StatusInternalServerError, "DPL001")
-		return
-	}
-	defer cursor.Close(nil)
-
-	var devices []utils.ConstellationDevice
-	if err = cursor.All(nil, &devices); err != nil {
-		utils.Error("DevicePublicList: Error decoding devices", err)
-		utils.HTTPError(w, "Error decoding devices", http.StatusInternalServerError, "DPL002")
 		return
 	}
 
@@ -99,19 +82,10 @@ func DevicePublicList(w http.ResponseWriter, req *http.Request) {
 }
 
 func PublicDeviceListNATS(m *nats.Msg) {
-	// Connect to the collection
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-	if errCo != nil {
-		utils.Error("PublicDeviceListNATS: Database Connect", errCo)
-		m.Respond([]byte(`{"status":"error","message":"Database error"}`))
-		return
-	}
-
 	utils.Debug("PublicDeviceListNATS: Fetching devices")
 
 	// Find all non-blocked, non-invisible devices
-	cursor, err := c.Find(nil, map[string]interface{}{
+	devices, err := utils.FindDevices(map[string]interface{}{
 		"Blocked": false,
 		"Invisible": false,
 	})
@@ -119,14 +93,6 @@ func PublicDeviceListNATS(m *nats.Msg) {
 	if err != nil {
 		utils.Error("PublicDeviceListNATS: Error fetching devices", err)
 		m.Respond([]byte(`{"status":"error","message":"Error fetching devices"}`))
-		return
-	}
-	defer cursor.Close(nil)
-
-	var devices []utils.ConstellationDevice
-	if err = cursor.All(nil, &devices); err != nil {
-		utils.Error("PublicDeviceListNATS: Error decoding devices", err)
-		m.Respond([]byte(`{"status":"error","message":"Error decoding devices"}`))
 		return
 	}
 

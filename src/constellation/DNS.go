@@ -31,6 +31,36 @@ func matchesDomain(qName string, hostname string) bool {
 	return qName == hostname + "." || strings.HasSuffix(qName, "." + hostname + ".")
 }
 
+// isAddrQuery reports whether q asks for an address record. AAAA is claimed and
+// answered empty rather than forwarded, so a client can't bypass us over IPv6.
+func isAddrQuery(q dns.Question) bool {
+	return q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA
+}
+
+// answerA appends an A record, skipping malformed IPs instead of packing a nil
+// RR, and skipping duplicates so overlapping hostnames only answer once
+func answerA(m *dns.Msg, name string, ip string) {
+	ip = cleanIp(ip)
+	if ip == "" {
+		utils.Error("DNS: no IP to answer " + name + " with", nil)
+		return
+	}
+
+	for _, existing := range m.Answer {
+		if a, ok := existing.(*dns.A); ok && a.Hdr.Name == name && a.A.String() == ip {
+			return
+		}
+	}
+
+	rr, err := dns.NewRR(name + " A " + ip)
+	if err != nil {
+		utils.Error("DNS: bad A record for "+name+" -> "+ip, err)
+		return
+	}
+
+	m.Answer = append(m.Answer, rr)
+}
+
 // isBlacklisted reports whether domain or any of its parent domains is in DNSBlacklist,
 // so a blacklisted "example.com" also blocks "ads.example.com"
 func isBlacklisted(domain string) bool {
@@ -81,17 +111,20 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				hostname := entry.Key
 				ip := entry.Value
 
-				if matchesDomain(q.Name, hostname) && q.Qtype == dns.TypeA {
-					utils.Debug("DNS Overwrite " + hostname + " with " + ip)
-					rr, _ := dns.NewRR(q.Name + " A " + ip)
-					m.Answer = append(m.Answer, rr)
+				if matchesDomain(q.Name, hostname) && isAddrQuery(q) {
+					if q.Qtype == dns.TypeA {
+						utils.Debug("DNS Overwrite " + hostname + " with " + ip)
+						answerA(m, q.Name, ip)
+					}
 					customHandled = true
 				}
 			}
 		}
 	}
 
-	// Overwrite local hostnames with their Constellation IP. Prioritize local URLs over tunnels
+	// Overwrite local hostnames with their Constellation IP. hostnames already
+	// includes the tunnel routes this node load-balances, so a server that was
+	// selected by DNS always answers for itself and keeps the request local.
 	if !customHandled {
 		thisIp, err := GetCurrentDeviceIP()
 		if err != nil {
@@ -100,36 +133,12 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			for _, q := range r.Question {
 				utils.Debug("DNS Question " + q.Name)
 				for _, hostname := range hostnames {
-					if matchesDomain(q.Name, hostname) && q.Qtype == dns.TypeA {
-						utils.Debug("DNS Overwrite " + hostname + " with " + thisIp)
-						rr, _ := dns.NewRR(q.Name + " A " + thisIp)
-						m.Answer = append(m.Answer, rr)
+					if matchesDomain(q.Name, hostname) && isAddrQuery(q) {
+						if q.Qtype == dns.TypeA {
+							utils.Debug("DNS Overwrite " + hostname + " with " + thisIp)
+							answerA(m, q.Name, thisIp)
+						}
 						customHandled = true
-					}
-				}
-			}
-		}
-
-		remoteTunnels := GetLocalTunnelCache()
-		currentName, err := GetCurrentDeviceName()
-		if err != nil {
-			utils.Error("[constellation] Failed to get current device name for DNS handling", err)
-		} else {
-			for _, q := range r.Question {
-				for _, tunnel := range remoteTunnels {
-					for _, target := range tunnel.Targets {
-						if target.DeviceName == currentName {
-							continue
-						}
-						destination := GetDeviceIp(target.DeviceName)
-						if destination != "" {
-							if matchesDomain(q.Name, tunnel.Route.Host) && q.Qtype == dns.TypeA {
-								utils.Debug("DNS Overwrite " + tunnel.Route.Host + " with " + destination)
-								rr, _ := dns.NewRR(q.Name + " A " + destination)
-								m.Answer = append(m.Answer, rr)
-								customHandled = true
-							}
-						}
 					}
 				}
 			}
@@ -144,10 +153,11 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			for deviceName, ip := range cachedNames {
 				procDeviceName := strings.ReplaceAll(deviceName, " ", "-")
 				
-				if matchesDomain(q.Name, procDeviceName) && q.Qtype == dns.TypeA {
-					utils.Debug("DNS Overwrite " + procDeviceName + " with its IP")
-					rr, _ := dns.NewRR(q.Name + " A " + ip)
-					m.Answer = append(m.Answer, rr)
+				if matchesDomain(q.Name, procDeviceName) && isAddrQuery(q) {
+					if q.Qtype == dns.TypeA {
+						utils.Debug("DNS Overwrite " + procDeviceName + " with its IP")
+						answerA(m, q.Name, ip)
+					}
 					customHandled = true
 				}
 			}
@@ -161,8 +171,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			if isBlacklisted(noDot) {
 				if q.Qtype == dns.TypeA {
 					utils.Debug("DNS Block " + noDot)
-					rr, _ := dns.NewRR(q.Name + " A 0.0.0.0")
-					m.Answer = append(m.Answer, rr)
+					answerA(m, q.Name, "0.0.0.0")
 				}
 				
 				customHandled = true
@@ -245,6 +254,13 @@ func StopDNS() {
 			utils.Warn("Failed to stop DNS server: " + err.Error())
 		}
 	}
+}
+
+// ReloadDNS rebinds the DNS server against the current config. Reaction of the
+// dns op-log domain, replacing the old restart-everything sync.
+func ReloadDNS() {
+	StopDNS()
+	InitDNS()
 }
 
 func InitDNS() {

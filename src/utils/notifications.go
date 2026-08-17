@@ -193,7 +193,7 @@ func WriteNotification(notification Notification) {
 		// list all users
 		users := ListAllUsers(notification.Recipient)
 
-		Debug("Notifications: Sending notification to " + string(len(users)) + " users")
+		Debug("Notifications: Sending notification to " + fmt.Sprint(len(users)) + " users")
 
 		for _, user := range users {
 			BufferedDBWrite("notifications", map[string]interface{}{

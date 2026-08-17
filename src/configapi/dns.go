@@ -43,9 +43,6 @@ func ConfigApiDNS(w http.ResponseWriter, req *http.Request) {
 
 	utils.Log("DNSConfigUpdate: Updating DNS configuration")
 
-	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
-
 	var updateReq DNSConfigRequest
 	err := json.NewDecoder(req.Body).Decode(&updateReq)
 	if err != nil {
@@ -53,6 +50,8 @@ func ConfigApiDNS(w http.ResponseWriter, req *http.Request) {
 		utils.HTTPError(w, "Invalid request", http.StatusBadRequest, "DNS002")
 		return
 	}
+
+	utils.ConfigLock.Lock()
 
 	config := utils.ReadConfigFromFile()
 
@@ -72,11 +71,20 @@ func ConfigApiDNS(w http.ResponseWriter, req *http.Request) {
 		config.ConstellationConfig.CustomDNSEntries = updateReq.CustomDNSEntries
 	}
 
-	utils.SetBaseMainConfig(config)
+	c := config.ConstellationConfig
+	// released before publishing: the apply loop takes ConfigLock to install this
+	utils.ConfigLock.Unlock()
 
-	err = utils.TouchDatabase()
+	err = constellation.PublishDomainOp(constellation.DomainDNS, constellation.DNSPayload{
+		DNSPort:                 c.DNSPort,
+		DNSFallback:             c.DNSFallback,
+		DNSBlockBlacklist:       c.DNSBlockBlacklist,
+		DNSAdditionalBlocklists: c.DNSAdditionalBlocklists,
+		CustomDNSEntries:        c.CustomDNSEntries,
+	})
 	if err != nil {
-		utils.Error("DNSConfigUpdate: Failed to touch database", err)
+		utils.HTTPStoreError(w, err, "DNS003")
+		return
 	}
 
 	utils.TriggerEvent(
@@ -86,10 +94,6 @@ func ConfigApiDNS(w http.ResponseWriter, req *http.Request) {
 		"",
 		map[string]interface{}{},
 	)
-
-	go func() {
-		constellation.SendNewDBSyncMessage()
-	}()
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "OK",

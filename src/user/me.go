@@ -27,19 +27,7 @@ func Me(w http.ResponseWriter, req *http.Request) {
 
 		nickname := utils.GetAuthContext(req).Nickname
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  	defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
-
-		user := utils.User{}
-
-		err := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-		}).Decode(&user)
+		user, err := utils.GetUser(nickname)
 
 		if err != nil {
 			utils.Error("UserGet: Error while getting user", err)

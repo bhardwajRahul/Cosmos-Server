@@ -219,6 +219,64 @@ cstln_cosmos_node: 1
 	}
 }
 
+// A joining node must start at the constellation's real epoch, not the default 1.
+// Asking at 1 is outranked by every stale responder — including managers revived
+// from an epoch a force-reform abandoned — and the snapshot responder can only
+// silence peers BEHIND the asker, so a replacement could be captured at a dead
+// epoch. Adoption is forward-only: a lower epoch in an enrollment bundle must
+// never walk a healthy node backwards into a log its cluster has left.
+func TestUnitConnectToExistingAdoptsEpochForwardOnly(t *testing.T) {
+	setupTestEnv(t, nil)
+
+	enroll := func(epoch string) {
+		t.Helper()
+		if _, err := ConnectToExisting([]byte("cstln_device_name: d\ncstln_oplog_epoch: "+epoch+"\n"),
+			utils.GetMainConfig()); err != nil {
+			t.Fatal("ConnectToExisting:", err)
+		}
+	}
+
+	enroll("4")
+	if got := utils.GetOplogEpoch(); got != 4 {
+		t.Fatalf("epoch = %d, want 4 — a joiner asking at the default 1 is outranked by stale peers", got)
+	}
+	// it has the epoch's name, not its contents: it must re-materialize before writing
+	if utils.IsOplogBootstrapped() {
+		t.Fatal("joiner claims materialized state for an epoch it has never seen")
+	}
+
+	if err := utils.MarkOplogBootstrapped(4); err != nil {
+		t.Fatal("MarkOplogBootstrapped:", err)
+	}
+
+	// a stale bundle must not move it back, nor discard the state it holds
+	enroll("2")
+	if got := utils.GetOplogEpoch(); got != 4 {
+		t.Fatalf("epoch = %d after a stale enrollment bundle, want 4 — adopting backwards "+
+			"walks this node into a log the cluster has abandoned", got)
+	}
+	if !utils.IsOplogBootstrapped() {
+		t.Fatal("a stale enrollment bundle cleared the bootstrapped marker")
+	}
+
+	// an equal epoch is a no-op rather than a pointless re-snapshot
+	enroll("4")
+	if !utils.IsOplogBootstrapped() {
+		t.Fatal("re-enrolling at the same epoch forced a needless re-materialization")
+	}
+
+	// and a bundle without the key at all still works (older manager, mixed versions)
+	enroll4Missing := func() {
+		if _, err := ConnectToExisting([]byte("cstln_device_name: d\n"), utils.GetMainConfig()); err != nil {
+			t.Fatal("ConnectToExisting without an epoch key:", err)
+		}
+	}
+	enroll4Missing()
+	if got := utils.GetOplogEpoch(); got != 4 {
+		t.Fatalf("epoch = %d after an enrollment bundle with no epoch key, want 4", got)
+	}
+}
+
 func TestUnitConnectToExistingWrongTypes(t *testing.T) {
 	// regression: wrong-typed fields must return an error, not panic
 	tests := []struct {

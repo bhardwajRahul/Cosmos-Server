@@ -27,16 +27,10 @@ func CheckConstellationToken(req *http.Request) error {
 
 	// remove "Bearer " from auth header
 	auth = strings.Replace(auth, "Bearer ", "", 1)
-	
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-	if errCo != nil {
-		return errCo
-	}
 
 	utils.Log("DeviceConfigSync: Fetching devices for IP " + ip)
 
-	cursor, err := c.Find(nil, map[string]interface{}{
+	devices, err := utils.FindDevices(map[string]interface{}{
 		"IP": ip,
 		"APIKey": auth,
 		"Blocked": false,
@@ -44,10 +38,9 @@ func CheckConstellationToken(req *http.Request) error {
 	if err != nil {
 		return err
 	}
-	defer cursor.Close(nil)
 
 	// if any device is found, return config without keys
-	if cursor.Next(nil) {
+	if len(devices) > 0 {
 		return nil
 	}
 

@@ -188,7 +188,6 @@ func createAPIToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 
@@ -197,15 +196,21 @@ func createAPIToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if _, exists := config.APITokens[request.Name]; exists {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "Token with this name already exists", http.StatusConflict, "AT013")
 		return
 	}
 
 	config.APITokens[request.Name] = tokenConfig
-	utils.SetBaseMainConfig(config)
+	tokens := config.APITokens
+	// the lock must be released before publishing: the apply loop takes it to
+	// install the op, and this handler waits for that apply
+	utils.ConfigLock.Unlock()
 
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
+	if err := constellation.PublishDomainOp(constellation.DomainAPITokens, tokens); err != nil {
+		utils.HTTPStoreError(w, err, "AT015")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.api.token.created",
@@ -266,25 +271,23 @@ func deleteAPIToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 
-	if config.APITokens == nil {
-		utils.HTTPError(w, "Token not found", http.StatusNotFound, "AT022")
-		return
-	}
-
 	if _, exists := config.APITokens[request.Name]; !exists {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "Token not found", http.StatusNotFound, "AT022")
 		return
 	}
 
 	delete(config.APITokens, request.Name)
-	utils.SetBaseMainConfig(config)
+	tokens := config.APITokens
+	utils.ConfigLock.Unlock()
 
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
+	if err := constellation.PublishDomainOp(constellation.DomainAPITokens, tokens); err != nil {
+		utils.HTTPStoreError(w, err, "AT023")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.api.token.deleted",
@@ -344,17 +347,12 @@ func updateAPIToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	utils.ConfigLock.Lock()
-	defer utils.ConfigLock.Unlock()
 
 	config := utils.ReadConfigFromFile()
 
-	if config.APITokens == nil {
-		utils.HTTPError(w, "Token not found", http.StatusNotFound, "AT032")
-		return
-	}
-
 	token, exists := config.APITokens[name]
 	if !exists {
+		utils.ConfigLock.Unlock()
 		utils.HTTPError(w, "Token not found", http.StatusNotFound, "AT032")
 		return
 	}
@@ -374,10 +372,13 @@ func updateAPIToken(w http.ResponseWriter, req *http.Request) {
 	}
 
 	config.APITokens[name] = token
-	utils.SetBaseMainConfig(config)
+	tokens := config.APITokens
+	utils.ConfigLock.Unlock()
 
-	utils.TouchDatabase()
-	go constellation.SendNewDBSyncMessage()
+	if err := constellation.PublishDomainOp(constellation.DomainAPITokens, tokens); err != nil {
+		utils.HTTPStoreError(w, err, "AT033")
+		return
+	}
 
 	utils.TriggerEvent(
 		"cosmos.api.token.updated",

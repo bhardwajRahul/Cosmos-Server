@@ -311,6 +311,8 @@
 	"mgmt.constellation.isRelay.label": "Relay traffic via this Lighthouse",
 	"mgmt.constellation.isExitNode.label": "Use this Lighthouse as an exit node",
 	"mgmt.constellation.isLoadBalancer.label": "Load Balancer / Tunnel Input Point",
+	"mgmt.constellation.forceReformLabel": "Force Re-form Cluster",
+	"mgmt.constellation.forceReformText": "Use this only when this network has permanently lost the majority of its manager nodes and configuration has become read-only. It rebuilds the cluster around this server alone: the other managers are removed and must be re-enrolled from scratch, and until they are, they can no longer change any configuration. Your devices, users, certificates and settings are kept. Note that a removed server keeps the configuration it already holds, so if one of them was lost or compromised, rotate your certificates, API tokens and stored credentials afterwards. This cannot be undone.",
 	"mgmt.constellation.resetLabel": "Reset Network",
 	"mgmt.constellation.resetText": "This will completely reset the network, and disconnect all the clients. You will need to reconnect them. This cannot be undone.",
 	"mgmt.constellation.restartButton": "Restart VPN Service",

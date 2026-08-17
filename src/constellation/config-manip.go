@@ -101,19 +101,8 @@ func UpdateFirewallBlockedClients() error {
 	}
 
 	// Get all devices from the database to map names to IPs
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	if errCo != nil {
-		return errCo
-	}
-	defer closeDb()
-
-	var devices []utils.ConstellationDevice
-	cursor, err := c.Find(nil, map[string]interface{}{})
+	devices, err := utils.ListDevices(true)
 	if err != nil {
-		return err
-	}
-	defer cursor.Close(nil)
-	if err := cursor.All(nil, &devices); err != nil {
 		return err
 	}
 

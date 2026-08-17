@@ -15,8 +15,8 @@ import (
 	"encoding/json"
 	"net/url"
 	"net/http/httptest"
-	"go.mongodb.org/mongo-driver/mongo"
-	
+	"errors"
+
 	// "fmt"
 
 	"github.com/ory/fosite/compose"
@@ -311,26 +311,20 @@ func detectCallbackEndpoint(w http.ResponseWriter, req *http.Request) {
 	// get user from claims
 	user := claims["sub"].(string)
 
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-	defer closeDb()
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database Error", http.StatusInternalServerError, "DB001")
-		return
-	}
-
 	nickname := utils.Sanitize(user)
-
-	userInBase := utils.User{}
 
 	utils.Debug("UserLogin: Logging user " + nickname)
 
-	err3 := c.FindOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}).Decode(&userInBase)
+	userInBase, err3 := utils.GetUser(nickname)
 
-	if err3 == mongo.ErrNoDocuments {
+	if errors.Is(err3, utils.ErrNotFound) {
 		utils.Error("UserLogin: User not found", err3)
+		utils.HTTPError(w, "User Logging Error", http.StatusInternalServerError, "UL001")
+		return
+	} else if err3 != nil {
+		// pre-existing gap fix: without this branch a store error would fall through
+		// towards token issuance guarded only by the zero-value Password check
+		utils.Error("UserLogin: Error while finding user", err3)
 		utils.HTTPError(w, "User Logging Error", http.StatusInternalServerError, "UL001")
 		return
 	} else if userInBase.Password == "" {

@@ -46,19 +46,7 @@ func New2FA(w http.ResponseWriter, req *http.Request) {
 		"Was2FAVerified": false,
 	}
 
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-		return
-	}
-
-	userInBase := utils.User{}
-
-	err = c.FindOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}).Decode(&userInBase)
+	userInBase, err := utils.GetUser(nickname)
 
 	if err != nil {
 		utils.Error("UserGet: Error while getting user", err)
@@ -72,11 +60,7 @@ func New2FA(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	_, err = c.UpdateOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}, map[string]interface{}{
-		"$set": toSet,
-	})
+	err = utils.UpdateUser(nickname, toSet)
 
 	if err != nil {
 		utils.Error("2FA: Cannot update user", err)

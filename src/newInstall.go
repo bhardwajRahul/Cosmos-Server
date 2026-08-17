@@ -170,14 +170,6 @@ func NewInstallRoute(w http.ResponseWriter, req *http.Request) {
 			}
 
 			// Admin User
-			c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-			if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-			}
-
 			nickname := utils.Sanitize(request.Nickname)
 			hashedPassword, err2 := bcrypt.GenerateFromPassword([]byte(request.Password), 14)
 
@@ -188,8 +180,9 @@ func NewInstallRoute(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
-			// pre-remove every users
-			_, err4 := c.DeleteMany(nil, map[string]interface{}{})
+			// Local wipe, not a cluster op: setup means "this box starts empty".
+			// Published, the empty filter becomes an unqualified DELETE everywhere.
+			err4 := utils.DeleteAllUsersLocal()
 			if err4 != nil {
 				utils.Error("NewInstall: Error deleting users", err4)
 				utils.HTTPError(w, "New Install: Error deleting users " + err4.Error(),
@@ -197,14 +190,14 @@ func NewInstallRoute(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
-			_, err3 := c.InsertOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-				"Email": request.Email,
-				"Password": hashedPassword,
-				"Role": utils.ADMIN,
-				"PasswordCycle": 0,
-				"CreatedAt": time.Now(),
-				"RegisteredAt": time.Now(),
+			err3 := utils.CreateUser(utils.User{
+				Nickname: nickname,
+				Email: request.Email,
+				Password: string(hashedPassword),
+				Role: utils.ADMIN,
+				PasswordCycle: 0,
+				CreatedAt: time.Now(),
+				RegisteredAt: time.Now(),
 			})
 
 			if err3 != nil {
@@ -395,14 +388,6 @@ func SetupRoute(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-		defer closeDb()
-		if errCo != nil {
-			utils.Error("Setup: Database Connect", errCo)
-			utils.HTTPError(w, "Database error", http.StatusInternalServerError, "SU006")
-			return
-		}
-
 		nickname := utils.Sanitize(request.Nickname)
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), 14)
 		if err != nil {
@@ -411,15 +396,16 @@ func SetupRoute(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		c.DeleteMany(nil, map[string]interface{}{})
-		_, err = c.InsertOne(nil, map[string]interface{}{
-			"Nickname":      nickname,
-			"Email":         request.Email,
-			"Password":      hashedPassword,
-			"Role":          utils.ADMIN,
-			"PasswordCycle": 0,
-			"CreatedAt":     time.Now(),
-			"RegisteredAt":  time.Now(),
+		// local wipe — see DeleteAllUsersLocal; setup must never empty the cluster
+		utils.DeleteAllUsersLocal()
+		err = utils.CreateUser(utils.User{
+			Nickname:      nickname,
+			Email:         request.Email,
+			Password:      string(hashedPassword),
+			Role:          utils.ADMIN,
+			PasswordCycle: 0,
+			CreatedAt:     time.Now(),
+			RegisteredAt:  time.Now(),
 		})
 		if err != nil {
 			utils.Error("Setup: Error creating admin user", err)

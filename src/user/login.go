@@ -2,11 +2,11 @@ package user
 
 import (
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"net/http"
 	"time"
 
-	"go.mongodb.org/mongo-driver/mongo"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/azukaar/cosmos-server/src/utils"
@@ -47,26 +47,14 @@ func UserLogin(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-		defer closeDb()
-		if errCo != nil {
-			utils.Error("Database Connect", errCo)
-			utils.HTTPError(w, "Database Error", http.StatusInternalServerError, "DB001")
-			return
-		}
-
 		nickname := utils.Sanitize(request.Nickname)
 		password := request.Password
 
-		user := utils.User{}
-
 		utils.Debug("UserLogin: Logging user " + nickname)
 
-		err3 := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-		}).Decode(&user)
+		user, err3 := utils.GetUser(nickname)
 
-		if err3 == mongo.ErrNoDocuments {
+		if errors.Is(err3, utils.ErrNotFound) {
 			bcrypt.CompareHashAndPassword([]byte("$2a$14$4nzsVwEnR3.jEbMTME7kqeCo4gMgR/Tuk7ivNExvXjr73nKvLgHka"), []byte("dummyPassword"))
 			utils.Error("UserLogin: User not found", err3)
 			utils.HTTPError(w, "User Logging Error", http.StatusInternalServerError, "UL001")
@@ -102,12 +90,14 @@ func UserLogin(w http.ResponseWriter, req *http.Request) {
 				"status": "OK",
 			})
 
-			_, errE := c.UpdateOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-			}, map[string]interface{}{
-				"$set": map[string]interface{}{
+			errE := utils.CommitMutation(utils.Mutation{
+				Table:  "users",
+				Op:     "update",
+				Filter: map[string]interface{}{"Nickname": nickname},
+				Doc: map[string]interface{}{
 					"LastLogin": time.Now(),
 				},
+				BestEffort: true,
 			})
 
 			if errE != nil {

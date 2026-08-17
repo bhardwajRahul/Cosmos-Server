@@ -319,18 +319,21 @@ func ResetNebula() error {
 	os.RemoveAll(utils.CONFIGFOLDER + "ca.key")
 	os.RemoveAll(utils.CONFIGFOLDER + "cosmos.crt")
 	os.RemoveAll(utils.CONFIGFOLDER + "cosmos.key")
-	os.RemoveAll(utils.CONFIGFOLDER + "jetstream")
+	os.RemoveAll(jetstreamDir())
 
-	// remove everything in db
-
-	c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-    defer closeDb()
+	// Wipe this node's devices LOCALLY. Deliberately not DeleteDevices: stop()
+	// above leaves the apply loop attached, so a published delete-all — empty
+	// filter, therefore an unqualified DELETE — would destroy the device registry
+	// on every node in the constellation. Leaving is a local act by definition.
+	err := utils.DeleteDevicesLocal(map[string]interface{}{})
 	if err != nil {
-			return err
+		return err
 	}
 
-	_, err = c.DeleteMany(nil, map[string]interface{}{})
-	if err != nil {
+	// Drop any formation licence with it: this node keeps its kv epoch across a
+	// reset, so a creator that resets and later joins someone else's constellation
+	// at the same epoch number would otherwise still look licensed to write direct.
+	if err := utils.ClearFormationWriter(); err != nil {
 		return err
 	}
 
@@ -341,6 +344,7 @@ func ResetNebula() error {
 	config.ConstellationConfig.ThisDeviceName = ""
 	config.ConstellationConfig.IPRange = ""
 	config.ConstellationConfig.ConstellationHostname = strings.Join(GetDefaultHostnames(), ",")
+	config.AgentMode = false
 
 	if config.Licence == "" {
 		config.ServerToken = ""
@@ -362,21 +366,8 @@ func ResetNebula() error {
 }
 
 func GetAllDevicesEvenBlocked() ([]utils.ConstellationDevice, error) {
-	c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-    defer closeDb()
+	devices, err := utils.ListDevices(true)
 	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-
-	var devices []utils.ConstellationDevice
-
-	cursor, err := c.Find(nil, map[string]interface{}{})
-	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-	defer cursor.Close(nil)
-
-	if err := cursor.All(nil, &devices); err != nil {
 		return []utils.ConstellationDevice{}, err
 	}
 
@@ -384,23 +375,8 @@ func GetAllDevicesEvenBlocked() ([]utils.ConstellationDevice, error) {
 }
 
 func GetAllDevices() ([]utils.ConstellationDevice, error) {
-	c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-    defer closeDb()
+	devices, err := utils.ListDevices(false)
 	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-
-	var devices []utils.ConstellationDevice
-
-	cursor, err := c.Find(nil, map[string]interface{}{
-		"Blocked": false,
-	})
-	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-	defer cursor.Close(nil)
-
-	if err := cursor.All(nil, &devices); err != nil {
 		return []utils.ConstellationDevice{}, err
 	}
 
@@ -408,24 +384,11 @@ func GetAllDevices() ([]utils.ConstellationDevice, error) {
 }
 
 func GetAllLightHouses() ([]utils.ConstellationDevice, error) {
-	c, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-    defer closeDb()
-	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-
-	var devices []utils.ConstellationDevice
-
-	cursor, err := c.Find(nil, map[string]interface{}{
+	devices, err := utils.FindDevices(map[string]interface{}{
 		"IsLighthouse": true,
 		"Blocked": false,
 	})
 	if err != nil {
-		return []utils.ConstellationDevice{}, err
-	}
-	defer cursor.Close(nil)
-
-	if err := cursor.All(nil, &devices); err != nil {
 		return []utils.ConstellationDevice{}, err
 	}
 
@@ -586,6 +549,18 @@ func getYAMLClientConfig(name, configPath, capki, cert, key, APIKey string, devi
 		}
 	}
 	configMap["cstln_nats_managers"] = seedManagers
+
+	// The live op-log epoch, so a joining node starts where the constellation
+	// actually is instead of at the default 1.
+	//
+	// This is a fence, not a convenience. The snapshot responder can only silence
+	// peers BEHIND the asker, so a node asking at epoch 1 is outranked by every
+	// stale responder — including managers revived from an epoch a force-reform
+	// abandoned. Those answer, and whoever replies first wins, so a replacement
+	// enrolled after a reform could be captured at the dead epoch and sit
+	// read-only re-asking until it happened to reach a current peer. Seeded with
+	// the real epoch it outranks them, and they decline.
+	configMap["cstln_oplog_epoch"] = utils.GetOplogEpoch()
 
 	if getLicence && device.CosmosNode == 0 {
 		// get client licence
@@ -1199,12 +1174,18 @@ func GetCurrentDevice() (utils.ConstellationDevice, error) {
 			}
 		}
 
+		// Unreadable role means server, never 0: a node given the plain-device NATS
+		// permissions can't run the constellation, and this path only runs before
+		// the first sync. Agent, not manager, to keep the guess least-privilege.
+		device.CosmosNode = 1
 		if v, exists := configMap["cstln_cosmos_node"]; exists {
 			if cosmosNode, ok := v.(int); ok {
 				device.CosmosNode = cosmosNode
 			} else {
-				utils.Warn("GetCurrentDevice: cstln_cosmos_node is not an int, skipping")
+				utils.Warn("GetCurrentDevice: cstln_cosmos_node is not an int, assuming agent")
 			}
+		} else {
+			utils.Warn("GetCurrentDevice: cstln_cosmos_node missing, assuming agent")
 		}
 
 		if v, exists := configMap["cstln_is_exit_node"]; exists {

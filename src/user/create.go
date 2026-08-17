@@ -3,10 +3,10 @@ package user
 import (
 	"net/http"
 	"encoding/json"
-	"go.mongodb.org/mongo-driver/mongo"
+	"errors"
 	"time"
 
-	"github.com/azukaar/cosmos-server/src/utils" 
+	"github.com/azukaar/cosmos-server/src/utils"
 )
 
 type CreateRequestJSON struct {
@@ -68,17 +68,6 @@ func UserCreate(w http.ResponseWriter, req *http.Request) {
 			role = utils.USER
 		}
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  	
-		defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
-
-		user := utils.User{}
-
 		utils.Debug("UserCreation: Creating user " + nickname)
 
 		// count users
@@ -95,23 +84,21 @@ func UserCreate(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		err2 := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-		}).Decode(&user)
+		_, err2 := utils.GetUser(nickname)
 
-		if err2 == mongo.ErrNoDocuments {
+		if errors.Is(err2, utils.ErrNotFound) {
 			RegisterKey := utils.GenerateRandomString(24)
 			RegisterKeyExp := time.Now().Add(time.Hour * 24 * 7)
 
-			_, err3 := c.InsertOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-				"Email": email,
-				"Password": "",
-				"RegisterKey": RegisterKey,
-				"RegisterKeyExp": RegisterKeyExp,
-				"Role": role,
-				"PasswordCycle": 0,
-				"CreatedAt": time.Now(),
+			err3 := utils.CreateUser(utils.User{
+				Nickname: nickname,
+				Email: email,
+				Password: "",
+				RegisterKey: RegisterKey,
+				RegisterKeyExp: RegisterKeyExp,
+				Role: role,
+				PasswordCycle: 0,
+				CreatedAt: time.Now(),
 			})
 
 			if err3 != nil {
@@ -137,8 +124,7 @@ func UserCreate(w http.ResponseWriter, req *http.Request) {
 					"registerKeyExp": RegisterKeyExp,
 				},
 			})
-			
-			go utils.ResyncConstellationNodes()
+
 		} else if err2 == nil {
 			utils.Error("UserCreation: User already exists", nil)
 			utils.HTTPError(w, "User already exists", http.StatusConflict, "UC002")

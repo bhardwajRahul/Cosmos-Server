@@ -4,11 +4,11 @@ import (
 	"net/http"
 	"math/rand"
 	"encoding/json"
-	"go.mongodb.org/mongo-driver/mongo"
+	"errors"
 	"time"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/azukaar/cosmos-server/src/utils" 
+	"github.com/azukaar/cosmos-server/src/utils"
 )
 
 type RegisterRequestJSON struct {
@@ -62,22 +62,14 @@ func UserRegister(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
+		user, err3 := utils.GetUser(nickname)
+		// key mismatch behaves like not-found, matching the old compound filter
+		if err3 == nil && user.RegisterKey != registerKey {
+			user = utils.User{}
+			err3 = utils.ErrNotFound
 		}
 
-		user := utils.User{}
-
-		err3 := c.FindOne(nil, map[string]interface{}{
-			"Nickname": nickname,
-			"RegisterKey": registerKey,
-		}).Decode(&user)
-
-		if err3 == mongo.ErrNoDocuments {
+		if errors.Is(err3, utils.ErrNotFound) {
 			utils.Error("UserRegister: User not found", err3)
 			utils.HTTPError(w, "User Register Error", http.StatusInternalServerError, "UR001")
 			return
@@ -94,11 +86,14 @@ func UserRegister(w http.ResponseWriter, req *http.Request) {
 			if RegisteredAt.IsZero() {
 				RegisteredAt = time.Now()
 			}
-			_, err4 := c.UpdateOne(nil, map[string]interface{}{
-				"Nickname": nickname,
-				"RegisterKey": registerKey,
-			}, map[string]interface{}{
-				"$set": map[string]interface{}{
+			err4 := utils.CommitMutation(utils.Mutation{
+				Table: "users",
+				Op:    "update",
+				Filter: map[string]interface{}{
+					"Nickname": nickname,
+					"RegisterKey": registerKey,
+				},
+				Doc: map[string]interface{}{
 					"Password": hashedPassword,
 					"RegisterKey": "",
 					"RegisterKeyExp": time.Time{},
@@ -127,8 +122,7 @@ func UserRegister(w http.ResponseWriter, req *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "OK",
 		})
-		
-		go utils.ResyncConstellationNodes()
+
 	} else {
 		utils.Error("UserRegister: Method not allowed" + req.Method, nil)
 		utils.HTTPError(w, "Method not allowed", http.StatusMethodNotAllowed, "HTTP001")

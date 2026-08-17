@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,7 +59,8 @@ type NodeHeartbeat struct {
 	Tags []string `json:"tags,omitempty"`
 }
 
-var ns *server.Server
+// atomic: written under natsStartMutex, but read lock-free by status/ping paths
+var ns atomic.Pointer[server.Server]
 
 func truncateLog(s string) string {
 	if len(s) > 100 {
@@ -86,6 +88,35 @@ func sanitizeNATSUsername(username string) string {
 	username = strings.ReplaceAll(username, "/", "_")
 	username = strings.ReplaceAll(username, "\\", "_")
 	return username
+}
+
+// the mobile app's only subject (see MasterNATSClientRouter)
+const publicDevicesSubject = "cosmos._global_.constellation.public-devices"
+
+// natsUserPermissions returns a device's NATS subject rules.
+//
+// Cosmos servers get none: their traffic already crosses a leafnode link whose
+// users carry no permissions, so the allow-list only ever handicapped
+// manager-local callers relative to agents — which is how the missing $JS.FC.>
+// publish hid, stalling ordered consumers and KV watches under backlog.
+//
+// CosmosNode 0 is the mobile app: one request, one inbox. No publish on
+// _INBOX.> — the server checks the published subject, never the reply-to — and
+// no cosmos._global_.>, which would let a phone write the op-log stream.
+func natsUserPermissions(device utils.ConstellationDevice) *server.Permissions {
+	if device.CosmosNode > 0 {
+		return nil
+	}
+
+	return &server.Permissions{
+		Publish: &server.SubjectPermission{
+			Allow: []string{publicDevicesSubject},
+		},
+		Subscribe: &server.SubjectPermission{
+			// the app subscribes to _INBOX.<nuid>.>, not a literal inbox
+			Allow: []string{"_INBOX.>"},
+		},
+	}
 }
 
 func GetClusterIPs() ([]*url.URL, error) {
@@ -125,6 +156,20 @@ func GetClusterIPs() ([]*url.URL, error) {
 
 // natsLeafPort is the port managers listen on for agent leafnode connections.
 const natsLeafPort = 7422
+
+// jetstreamDir is THE JetStream store directory — one expression, used by the
+// server option and by every path that deletes it.
+//
+// CONFIGFOLDER is copied verbatim out of COSMOS_CONFIG_FOLDER with no
+// trailing-slash normalization (index.go), so string concatenation gives two
+// different answers depending on the spelling: with COSMOS_CONFIG_FOLDER=/config,
+// `CONFIGFOLDER + "/jetstream"` is /config/jetstream while `CONFIGFOLDER +
+// "jetstream"` is /configjetstream. The second silently RemoveAll's a path that
+// does not exist and reports success, which would leave the abandoned cluster's
+// state in place through a force-reform — the one thing the reform must not do.
+func jetstreamDir() string {
+	return filepath.Join(utils.CONFIGFOLDER, "jetstream")
+}
 
 // readCstlnConfigField returns a cstln_* field from this node's nebula.yml;
 // the creator's own nebula.yml lacks these (its values live in the main config).
@@ -167,9 +212,51 @@ func getSeedManagerIPs() []string {
 	return seeds
 }
 
+// blockedDeviceIPs returns the nebula IPs that belong ONLY to blocked devices —
+// read from the store rather than the cache, since refreshDeviceCache drops
+// blocked devices and so can say who is live but never who was removed.
+//
+// Subtracting the live set is not a refinement, it is the whole correctness of
+// this function. An IP is not retired with its device: GetNextAvailableIP
+// allocates out of the unblocked devices only, so the replacement manager
+// enrolled after a force-reform normally takes the dead manager's address back.
+// Keyed on IP alone, this would then remove the LIVE replacement from the
+// cluster route list and JetStream would never elect — turning the reform into
+// the outage it was meant to repair. The schema allows the overlap on purpose
+// (UNIQUE(ip) WHERE blocked=0).
+func blockedDeviceIPs() map[string]bool {
+	blocked := map[string]bool{}
+	devices, err := utils.FindDevices(map[string]interface{}{"Blocked": true})
+	if err != nil {
+		utils.Debug("[NATS] Could not read blocked devices: " + err.Error())
+		return blocked
+	}
+	for _, d := range devices {
+		if d.IP != "" {
+			blocked[cleanIp(d.IP)] = true
+		}
+	}
+	if len(blocked) == 0 {
+		return blocked
+	}
+
+	live, err := utils.ListDevices(false)
+	if err != nil {
+		// Fail open: subtracting nothing leaves a stale route, which the epoch fence
+		// still makes harmless. Subtracting wrongly drops a live manager out of the
+		// cluster, which nothing else protects against.
+		utils.Debug("[NATS] Could not read live devices, keeping every route: " + err.Error())
+		return map[string]bool{}
+	}
+	for _, d := range live {
+		delete(blocked, cleanIp(d.IP))
+	}
+	return blocked
+}
+
 // getManagerIPs returns the nebula IPs of every known Manager node
-// (CosmosNode == 2), excluding excludeIP: device cache ∪ enrollment seeds,
-// falling back to the nebula lighthouses when both are empty.
+// (CosmosNode == 2), excluding excludeIP: device cache union enrollment seeds, minus
+// anything blocked, falling back to the nebula lighthouses when both are empty.
 func getManagerIPs(excludeIP string) []string {
 	ipsMap := map[string]bool{}
 	cachedDevices, _ := deviceCacheSnapshot()
@@ -188,6 +275,17 @@ func getManagerIPs(excludeIP string) []string {
 		}
 	}
 	delete(ipsMap, cleanIp(excludeIP))
+
+	// The seeds above are a bootstrap hint frozen into nebula.yml at enrollment
+	// and never rewritten, so on their own they can only ever ADD a manager and
+	// never retire one. Subtracting the blocked set is what lets this list shrink
+	// — which force-reform depends on, since these IPs become the cluster route
+	// list and "routes must never point at non-voters" (see StartNATS): a reform
+	// that wiped the store dir and then rebuilt the meta group around the two
+	// managers it just fenced would have isolated nothing.
+	for ip := range blockedDeviceIPs() {
+		delete(ipsMap, ip)
+	}
 
 	ips := make([]string, 0, len(ipsMap))
 	for ip := range ipsMap {
@@ -265,11 +363,11 @@ func StartNATS() {
 	natsStartMutex.Lock()
 	defer natsStartMutex.Unlock()
 
-	if ns != nil {
+	if ns.Load() != nil {
 		return
 	}
 
-	natsStartTime = time.Now()
+	setNATSStartTime(time.Now())
 
 	ip, err := GetCurrentDeviceIP()
 	if err != nil {
@@ -329,45 +427,10 @@ func StartNATS() {
 		seenUsers[username] = true
 		utils.Debug("[NATS] Adding NATS user for device: " + devices.DeviceName + " With API Key: " + redactSecret(devices.APIKey))
 
-		// TODO: Agent / users with less permissions
-
 		users = append(users, &server.User{
-			Username: username,
-			Password: devices.APIKey,
-			Permissions: &server.Permissions{
-				Publish: &server.SubjectPermission{
-					Allow: []string{
-						"cosmos." + username + ".>", "_INBOX.>",
-						"cosmos._global_.>",
-						"_INBOX.>",
-						// Scheduler: leader publishes per-target deployment commands
-						// to cosmos.<target>.deployments.command. Scoped so non-leaders
-						// can't fabricate arbitrary cross-node traffic.
-						"cosmos.*.deployments.>",
-						"$KV.constellation-nodes.>",
-						"$KV.constellation-deployments.>",
-						// Scheduler leader lease lives in its own bucket (see
-						// src/pro scheduler election)
-						"$KV.constellation-leader.>",
-						"$JS.API.STREAM.INFO.>",
-						"$JS.API.>",
-					},
-				},
-				Subscribe: &server.SubjectPermission{
-					Allow: []string{
-						"cosmos." + username + ".>", "_INBOX.>",
-						"cosmos._global_.>",
-						"_INBOX.>",
-						"$KV.constellation-nodes.>",
-						"$KV.constellation-deployments.>",
-						// Scheduler leader lease lives in its own bucket (see
-						// src/pro scheduler election)
-						"$KV.constellation-leader.>",
-						"$JS.API.STREAM.INFO.>",
-						"$JS.API.>",
-					},
-				},
-			},
+			Username:    username,
+			Password:    devices.APIKey,
+			Permissions: natsUserPermissions(devices),
 		})
 	}
 
@@ -406,7 +469,7 @@ func StartNATS() {
 		ServerName: natsName,
 
 		JetStream: !isAgent,
-		StoreDir:  utils.CONFIGFOLDER + "/jetstream",
+		StoreDir:  jetstreamDir(),
 
 		// Lets agents reach the manager's JetStream over leafnodes: nats-server
 		// otherwise denies $JS.API.> across account leaf links. Enforced
@@ -509,7 +572,7 @@ func StartNATS() {
 		} else {
 			// Clear clustered meta state ($SYS raft groups) left by older
 			// versions so it cannot confuse a non-clustered start.
-			os.RemoveAll(utils.CONFIGFOLDER + "/jetstream/$SYS")
+			os.RemoveAll(filepath.Join(jetstreamDir(), "$SYS"))
 		}
 	}
 
@@ -519,33 +582,35 @@ func StartNATS() {
 
 	for err != nil && retries < 5 {
 		// drop any instance left over from a failed attempt
-		if ns != nil {
-			ns.Shutdown()
-			ns.WaitForShutdown()
-			ns = nil
+		if old := ns.Load(); old != nil {
+			old.Shutdown()
+			old.WaitForShutdown()
+			ns.Store(nil)
 		}
 
-		ns, err = server.NewServer(opts)
+		var srv *server.Server
+		srv, err = server.NewServer(opts)
 		if err != nil {
 			retries++
 			continue
 		}
+		ns.Store(srv)
 
 		if utils.LoggingLevelLabels[utils.GetMainConfig().LoggingLevel] == utils.DEBUG {
-			ns.SetLogger(natsLogAdapter{}, true, true)
+			srv.SetLogger(natsLogAdapter{}, true, true)
 		}
 
 		if !NebulaStarted.Load() {
 			utils.Error("[NATS] Nebula not started, aborting NATS server setup", nil)
-			ns.Shutdown()
-			ns = nil
+			srv.Shutdown()
+			ns.Store(nil)
 			return
 		}
 
-		go ns.Start()
+		go srv.Start()
 
 		// Wait for the server to be ready
-		if !ns.ReadyForConnections(time.Duration(2*(retries+1)) * time.Second) {
+		if !srv.ReadyForConnections(time.Duration(2*(retries+1)) * time.Second) {
 			retries++
 			utils.Debug("[NATS] NATS server not ready...")
 			err = errors.New("NATS server not ready")
@@ -556,10 +621,10 @@ func StartNATS() {
 	}
 
 	if err != nil {
-		if ns != nil {
-			ns.Shutdown()
-			ns.WaitForShutdown()
-			ns = nil
+		if old := ns.Load(); old != nil {
+			old.Shutdown()
+			old.WaitForShutdown()
+			ns.Store(nil)
 		}
 		utils.MajorError("[NATS] Error starting NATS server", err)
 		// hand off to the watchdog so a failed bring-up gets retried (standalone nodes don't need a server)
@@ -632,23 +697,44 @@ func natsServerWatchdog() {
 	}
 }
 
-// natsStartTime marks the last constellation NATS bring-up; within
-// natsStartGracePeriod the UI reports failing steps as still starting.
-var natsStartTime time.Time
+// natsStartTimeNano marks the last constellation NATS bring-up (UnixNano, 0 =
+// never); within natsStartGracePeriod the UI reports failing steps as still
+// starting.
+//
+// Atomic rather than a time.Time: StartNATS writes it while GetNATSStatus reads
+// it from HTTP handlers, and a time.Time is multi-word (wall, ext, loc), so that
+// pairing is an unconditional data race, not a narrow interleaving. Polling
+// status during a nebula bounce makes the overlap structural.
+var natsStartTimeNano atomic.Int64
+
+func setNATSStartTime(t time.Time) {
+	natsStartTimeNano.Store(t.UnixNano())
+}
+
+// natsStarting reports whether we are inside the post-start grace period.
+func natsStarting() bool {
+	nano := natsStartTimeNano.Load()
+	if nano == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, nano)) < natsStartGracePeriod
+}
 
 const natsStartGracePeriod = 2 * time.Minute
 
 func StopNATS() {
 	utils.Log("[NATS] Stopping NATS server...")
 
+	StopOplogApply()
+
 	// serialized with StartNATS so we never shut down a server mid-bring-up
 	natsStartMutex.Lock()
 	defer natsStartMutex.Unlock()
 
-	if ns != nil {
-		ns.Shutdown()
-		ns.WaitForShutdown()
-		ns = nil
+	if old := ns.Load(); old != nil {
+		old.Shutdown()
+		old.WaitForShutdown()
+		ns.Store(nil)
 	}
 	NATSStarted.Store(false)
 }
@@ -675,7 +761,41 @@ func connectNATSClient(url string, user string, pwd string) (*nats.Conn, error) 
 		nats.MaxReconnects(-1),
 
 		nats.NoEcho(),
+
+		nats.ErrorHandler(natsAsyncError),
 	)
+}
+
+// natsAsyncError surfaces the errors nats.go reports out of band instead of
+// returning them from a call.
+//
+// Nothing registered a handler before this, so every one of those was discarded
+// — which is why a survivor whose ordered consumer died during a quorum outage
+// produced no log line at all, only silence and 503s. The library knew
+// (ErrConsumerNotActive, and the consumer-recreation failures behind it); we
+// simply were not listening.
+//
+// This is diagnostics plus a hint, NOT the recovery mechanism. Recovery stays
+// with the progress probe (oplog_apply.go), which owes nothing to nats.go's
+// internals and so cannot be broken by a client upgrade.
+func natsAsyncError(_ *nats.Conn, sub *nats.Subscription, err error) {
+	if err == nil {
+		return
+	}
+
+	where := ""
+	if sub != nil {
+		where = " on " + sub.Subject
+	}
+	utils.Warn("[NATS] async error" + where + ": " + err.Error())
+
+	// The library spots an inactive consumer well before three probes can prove
+	// it. Arming the detector rather than detaching here keeps the evidence
+	// requirement intact: the next probe still has to see the log ahead of us AND
+	// our position frozen, so a spurious signal costs nothing.
+	if sub != nil && oplogOwnsSubscription(sub) {
+		oplogArmStallDetector()
+	}
 }
 
 func InitNATSClient() error {
@@ -772,13 +892,16 @@ func InitNATSClient() error {
 		utils.Error("[NATS] Failed to get JetStream context", err)
 	}
 
-	// standalone has no peers to heartbeat with or sync from
+	// standalone has no peers to heartbeat with and writes straight to SQLite
 	if IsConstellationStandalone() {
-		utils.Debug("[NATS] Standalone constellation, skipping heartbeat and sync request")
+		utils.Debug("[NATS] Standalone constellation, skipping heartbeat and op-log")
 	} else {
 		go ClientHeartbeatInit()
 
-		go SendRequestSyncMessage()
+		// the apply loop materializes this node's config from the op-log; it
+		// waits for JetStream itself, so starting it here is safe even if JS
+		// isn't elected yet
+		StartOplogApply()
 	}
 
 	// POST CLIENT CONNECTION HOOK
@@ -900,17 +1023,33 @@ type NATSStatus struct {
 	// ManagerLinkUp: can this node reach a manager's NATS — matters on
 	// agents, whose local client is always connected to its own server.
 	ManagerLinkUp bool `json:"managerLinkUp"`
+
+	// op-log health. OplogAttached is also "config is writable here": writes
+	// are published, not applied locally, so a detached node is read-only.
+	OplogAttached   bool   `json:"oplogAttached"`
+	OplogHalted     bool   `json:"oplogHalted"`
+	OplogHaltReason string `json:"oplogHaltReason,omitempty"`
+	OplogEpoch      uint64 `json:"oplogEpoch"`
+	OplogSeq        uint64 `json:"oplogSeq"`
+	ConfigWritable  bool   `json:"configWritable"`
+
+	// OplogReplicas is the log's actual replication factor, 0 when the stream is
+	// not reachable. It is the only externally visible evidence that the R1→R3
+	// scale-up happened: writes succeed perfectly well against an R1 stream, so a
+	// cluster that silently never scaled looks identical to a healthy one.
+	OplogReplicas int `json:"oplogReplicas"`
 }
 
 func GetNATSStatus() NATSStatus {
 	isAgent := utils.FBL.AgentMode
 
+	srv := ns.Load()
 	status := NATSStatus{
 		Role:          "manager",
 		HAMode:        IsNATSHA(),
 		NebulaStarted: NebulaStarted.Load(),
-		ServerRunning: NATSStarted.Load() && ns != nil,
-		Starting:      !natsStartTime.IsZero() && time.Since(natsStartTime) < natsStartGracePeriod,
+		ServerRunning: NATSStarted.Load() && srv != nil,
+		Starting:      natsStarting(),
 	}
 	if isAgent {
 		status.Role = "agent"
@@ -927,10 +1066,10 @@ func GetNATSStatus() NATSStatus {
 	}
 	status.KnownManagers = getManagerIPs(myIP)
 
-	if ns != nil {
-		status.ConnectedClients = ns.NumClients()
-		status.ConnectedLeafs = ns.NumLeafNodes()
-		status.ClusterRoutes = ns.NumRoutes()
+	if srv != nil {
+		status.ConnectedClients = srv.NumClients()
+		status.ConnectedLeafs = srv.NumLeafNodes()
+		status.ClusterRoutes = srv.NumRoutes()
 	}
 
 	if isAgent {
@@ -942,6 +1081,15 @@ func GetNATSStatus() NATSStatus {
 
 	status.ClientConnected = IsClientConnected()
 
+	status.OplogAttached = oplogAttached.Load()
+	status.OplogHalted = oplogHalted.Load()
+	if reason, ok := oplogHaltReason.Load().(string); ok && status.OplogHalted {
+		status.OplogHaltReason = reason
+	}
+	status.OplogEpoch = utils.GetOplogEpoch()
+	status.OplogSeq = utils.GetLastAppliedSeq()
+	status.ConfigWritable = oplogWriteMode() != oplogReadOnly
+
 	clientConfigLock.RLock()
 	if js != nil {
 		if _, err := js.AccountInfo(); err == nil {
@@ -949,6 +1097,9 @@ func GetNATSStatus() NATSStatus {
 		}
 		if _, err := js.KeyValue("constellation-nodes"); err == nil {
 			status.KVNodesReady = true
+		}
+		if si, err := js.StreamInfo(oplogStreamName(status.OplogEpoch)); err == nil {
+			status.OplogReplicas = si.Config.Replicas
 		}
 	}
 	clientConfigLock.RUnlock()
@@ -958,6 +1109,9 @@ func GetNATSStatus() NATSStatus {
 
 func CloseNATSClient() {
 	utils.Log("Closing NATS client...")
+
+	// before taking clientConfigLock: the loop's own goroutine reads it
+	StopOplogApply()
 
 	StopHeartbeat()
 
@@ -1081,7 +1235,11 @@ func MasterNATSClientRouter() {
 		m.Respond([]byte("Pong"))
 	})
 
-	SyncNATSClientRouter(nc)
+	// public device list survives the legacy sync retirement — it is a read-only
+	// query, not a replication path
+	nc.Subscribe("cosmos._global_.constellation.public-devices", PublicDeviceListNATS)
+
+	oplogSnapshotRouter(nc)
 
 	// Scheduler: subscribe this node to its own per-target deployment command
 	// subject so the leader can dispatch apply/remove here.
@@ -1102,7 +1260,7 @@ func PingNATSClient() bool {
 
 	// An isolated agent's local client still looks healthy — without a
 	// leafnode link to a manager it isn't connected to the constellation.
-	if utils.FBL.AgentMode && (ns == nil || ns.NumLeafNodes() == 0) {
+	if srv := ns.Load(); utils.FBL.AgentMode && (srv == nil || srv.NumLeafNodes() == 0) {
 		utils.Warn("[NATS] Agent has no leafnode link to a manager")
 		return false
 	}

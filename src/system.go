@@ -52,7 +52,7 @@ func StatusRoute(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		if(!docker.DockerIsConnected) {
+		if(!docker.DockerIsConnected.Load()) {
 			ed := docker.Connect()
 			if ed != nil {
 				utils.Error("Status: Docker error", ed)
@@ -89,7 +89,7 @@ func StatusRoute(w http.ResponseWriter, req *http.Request) {
 				"containerized": utils.IsInsideContainer,
 				"hostmode": utils.IsHostNetwork || !utils.IsInsideContainer || utils.GetMainConfig().DisableHostModeWarning,
 				"database": utils.DBStatus,
-				"docker": docker.DockerIsConnected,
+				"docker": docker.DockerIsConnected.Load(),
 				"backup_status": docker.ExportError,
 				"letsencrypt": utils.GetMainConfig().HTTPConfig.HTTPSCertificateMode == "LETSENCRYPT" && utils.GetMainConfig().HTTPConfig.SSLEmail == "",
 				"domain": utils.GetMainConfig().HTTPConfig.Hostname == "localhost" || utils.GetMainConfig().HTTPConfig.Hostname == "0.0.0.0",

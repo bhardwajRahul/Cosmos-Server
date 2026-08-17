@@ -121,8 +121,9 @@ func TestE2EHAFormation(t *testing.T) {
 	})
 }
 
-// TestE2ESyncPropagation: a DB edit on the manager propagates to the agent via
-// the NATS sync protocol and converges byte-for-byte.
+// TestE2ESyncPropagation: a DB edit on the manager propagates to the agent
+// through the JetStream op-log and converges byte-for-byte, with both nodes
+// landing on the same log sequence.
 func TestE2ESyncPropagation(t *testing.T) {
 	c := newE2ECluster(t, false, []e2eNodeSpec{
 		{Name: "prime", Octet: 1, CosmosNode: 2, Lighthouse: true},
@@ -144,9 +145,8 @@ func TestE2ESyncPropagation(t *testing.T) {
 		map[string]string{"DeviceName": "agentone", "Nickname": "renamed-by-e2e"}); err != nil {
 		t.Fatal("e2e: edit-device:", err)
 	}
-	if _, err := c.node("prime").post("/sync-push", nil); err != nil {
-		t.Fatal("e2e: sync-push:", err)
-	}
+	// no push step: the edit published one op-log entry, and every node applies
+	// it from the stream on its own
 
 	c.waitFor(120*time.Second, "edited nickname visible on agent", func() bool {
 		db, err := c.node("agentone").get("/db")
@@ -161,6 +161,11 @@ func TestE2ESyncPropagation(t *testing.T) {
 			}
 		}
 		return false
+	})
+
+	// op-log semantics: converged means same dump AND same position in the log
+	c.waitForDetail(60*time.Second, "manager and agent at the same op-log sequence", func() (bool, string) {
+		return c.oplogConverged("prime", "agentone")
 	})
 }
 

@@ -424,6 +424,26 @@ func CertificateIsExpired(validUntil time.Time) bool {
 	return isValid
 }
 
+var appliedDNSChallengeEnv []string
+
+// env vars are process-wide and survive soft restarts, so drop the ones removed from the config
+func applyDNSChallengeEnv(newEnv map[string]string) {
+	for _, key := range appliedDNSChallengeEnv {
+		if _, ok := newEnv[key]; !ok {
+			os.Unsetenv(key)
+		}
+	}
+
+	applied := make([]string, 0, len(newEnv))
+	for key, value := range newEnv {
+		key = strings.TrimSpace(key)
+		os.Setenv(key, strings.TrimSpace(value))
+		applied = append(applied, key)
+	}
+
+	appliedDNSChallengeEnv = applied
+}
+
 func InitServer() *mux.Router {
 	utils.RestartHTTPServer = RestartHTTPServer
 	baseMainConfig := utils.GetBaseMainConfig()
@@ -491,14 +511,13 @@ func InitServer() *mux.Router {
 		config.HTTPConfig.TLSKeyHostsCached[0] == config.HTTPConfig.Hostname  &&
 		CertificateIsExpired(baseMainConfig.HTTPConfig.TLSValidUntil)
 
-	if letsEncryptNeedsRefresh && config.HTTPConfig.HTTPSCertificateMode == utils.HTTPSCertModeList["LETSENCRYPT"] {
-			if config.HTTPConfig.DNSChallengeProvider != "" {
-					newEnv := config.HTTPConfig.DNSChallengeConfig
-					for key, value := range newEnv {
-							os.Setenv(key, value)
-					}
-			}
+	dnsChallengeEnv := map[string]string{}
+	if config.HTTPConfig.DNSChallengeProvider != "" {
+		dnsChallengeEnv = config.HTTPConfig.DNSChallengeConfig
+	}
+	applyDNSChallengeEnv(dnsChallengeEnv)
 
+	if letsEncryptNeedsRefresh && config.HTTPConfig.HTTPSCertificateMode == utils.HTTPSCertModeList["LETSENCRYPT"] {
 			// Get Certificates
 			pub, priv := utils.DoLetsEncrypt()
 
@@ -691,6 +710,7 @@ func InitServer() *mux.Router {
 	srapiAdmin.HandleFunc("/api/constellation/devices/{id}/ping", constellation.DevicePing)
 	srapiAdmin.HandleFunc("/api/constellation/restart", constellation.API_Restart)
 	srapiAdmin.HandleFunc("/api/constellation/reset", constellation.API_Reset)
+	srapiAdmin.HandleFunc("/api/constellation/force-reform", constellation.API_ForceReform)
 	srapiAdmin.HandleFunc("/api/constellation/connect", constellation.API_ConnectToExisting)
 	srapiAdmin.HandleFunc("/api/constellation/create", constellation.API_NewConstellation)
 	srapiAdmin.HandleFunc("/api/constellation/config", constellation.API_GetConfig)

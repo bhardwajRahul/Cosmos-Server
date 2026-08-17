@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/azukaar/cosmos-server/src/utils"
 )
@@ -54,15 +53,6 @@ func DeviceEdit_API(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-	defer closeDb()
-
-	if errCo != nil {
-		utils.Error("Database Connect", errCo)
-		utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-		return
-	}
-
 	// Non-lighthouses cannot be relay, exit, or load balancer
 	if !request.IsLighthouse {
 		request.IsRelay = false
@@ -101,36 +91,22 @@ func DeviceEdit_API(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Only topology-affecting flags require a mesh restart; Tags reach the scheduler
-	// via the 2s heartbeat. If the current record can't be read, assume topology changed.
-	topologyChanged := true
-	var currentRecord utils.ConstellationDevice
-	if errFind := c.FindOne(nil, map[string]interface{}{
-		"DeviceName": deviceName,
-		"Blocked":    false,
-	}).Decode(&currentRecord); errFind == nil {
-		topologyChanged = currentRecord.IsLighthouse != request.IsLighthouse ||
-			currentRecord.IsRelay != request.IsRelay ||
-			currentRecord.IsExitNode != request.IsExitNode ||
-			currentRecord.IsLoadBalancer != request.IsLoadBalancer
-	}
-
-	_, err = c.UpdateOne(nil, map[string]interface{}{
+	// restart-or-refresh is no longer decided here: the apply loop diffs the op
+	// against the row's pre-image and reacts identically on every node
+	err = utils.UpdateDevices(map[string]interface{}{
 		"DeviceName": deviceName,
 		"Blocked":    false,
 	}, map[string]interface{}{
-		"$set": map[string]interface{}{
-			"IsLighthouse":   request.IsLighthouse,
-			"IsRelay":        request.IsRelay,
-			"IsExitNode":     request.IsExitNode,
-			"IsLoadBalancer": request.IsLoadBalancer,
-			"Tags":           cleanTags,
-		},
+		"IsLighthouse":   request.IsLighthouse,
+		"IsRelay":        request.IsRelay,
+		"IsExitNode":     request.IsExitNode,
+		"IsLoadBalancer": request.IsLoadBalancer,
+		"Tags":           cleanTags,
 	})
 
 	if err != nil {
 		utils.Error("DeviceEdit: Error updating device", err)
-		utils.HTTPError(w, "Device Edit Error: "+err.Error(), http.StatusInternalServerError, "DE003")
+		utils.HTTPStoreError(w, err, "DE003")
 		return
 	}
 
@@ -146,20 +122,4 @@ func DeviceEdit_API(w http.ResponseWriter, req *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "OK",
 	})
-
-	if !topologyChanged {
-		// tag-only/no-op edit: local cache refresh first so the next heartbeat
-		// carries the new Tags, then sync peers without triggering their restart
-		go func() {
-			refreshDeviceCache()
-			SendNewDBSyncMessageNoRestart()
-		}()
-		return
-	}
-
-	go func() {
-		go SendNewDBSyncMessage()
-		time.Sleep(2 * time.Second)
-		RestartNebula()
-	}()
 }

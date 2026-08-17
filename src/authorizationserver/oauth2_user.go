@@ -16,16 +16,7 @@ import (
 // source of truth shared by the userinfo endpoint and the id_token, so both
 // always return the same set of claims.
 func getUserClaims(nickname string, scopes fosite.Arguments) (map[string]interface{}, error) {
-	c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-	defer closeDb()
-	if errCo != nil {
-		return nil, errCo
-	}
-
-	user := utils.User{}
-	err := c.FindOne(nil, map[string]interface{}{
-		"Nickname": nickname,
-	}).Decode(&user)
+	user, err := utils.GetUser(nickname)
 	if err != nil {
 		return nil, err
 	}

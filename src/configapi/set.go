@@ -3,8 +3,46 @@ package configapi
 import (
 	"net/http"
 	"encoding/json"
+	"github.com/azukaar/cosmos-server/src/constellation"
 	"github.com/azukaar/cosmos-server/src/utils"
 )
+
+// publishReplicatedDomains publishes the three op-log domains this whole-config
+// PUT can touch. Full-state ops are idempotent, so publishing all three
+// unconditionally is cheaper than diffing and cannot miss a change. APITokens and
+// the auth keypair are restored from disk above, so they are not editable here.
+func publishReplicatedDomains(request utils.Config) error {
+	c := request.ConstellationConfig
+	err := constellation.PublishDomainOp(constellation.DomainDNS, constellation.DNSPayload{
+		DNSPort:                 c.DNSPort,
+		DNSFallback:             c.DNSFallback,
+		DNSBlockBlacklist:       c.DNSBlockBlacklist,
+		DNSAdditionalBlocklists: c.DNSAdditionalBlocklists,
+		CustomDNSEntries:        c.CustomDNSEntries,
+	})
+	if err != nil {
+		return err
+	}
+	if err := constellation.PublishDomainOp(constellation.DomainRoles, request.Roles); err != nil {
+		return err
+	}
+	return constellation.PublishDomainOp(constellation.DomainOpenIDClients, request.OpenIDClients)
+}
+
+// restoreReplicatedDomains takes the replicated fields from the freshly applied
+// config rather than from the request, so the local write can never roll back
+// what the apply loop just installed. Same treatment the auth keypair and API
+// tokens already get. Every OTHER ConstellationConfig field (Enabled, IPRange,
+// ThisDeviceName, DNSDisabled...) stays node-local from the request by design.
+func restoreReplicatedDomains(request *utils.Config, config utils.Config) {
+	request.ConstellationConfig.DNSPort = config.ConstellationConfig.DNSPort
+	request.ConstellationConfig.DNSFallback = config.ConstellationConfig.DNSFallback
+	request.ConstellationConfig.DNSBlockBlacklist = config.ConstellationConfig.DNSBlockBlacklist
+	request.ConstellationConfig.DNSAdditionalBlocklists = config.ConstellationConfig.DNSAdditionalBlocklists
+	request.ConstellationConfig.CustomDNSEntries = config.ConstellationConfig.CustomDNSEntries
+	request.Roles = config.Roles
+	request.OpenIDClients = config.OpenIDClients
+}
 
 // ConfigApiSet godoc
 // @Summary Update server configuration
@@ -100,8 +138,25 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
+		// Replicated domains go through the op-log, never straight to disk. Published
+		// BEFORE the local write so a read-only node fails here with nothing written,
+		// rather than leaving a node-local edit the log will never hear about and the
+		// next snapshot will silently discard. ConfigLock must NOT be held across
+		// these — the apply loop takes it to install the op we are waiting on.
+		if err := publishReplicatedDomains(request); err != nil {
+			utils.HTTPStoreError(w, err, "UC004")
+			return
+		}
+
+		// The local write is the node-local half. Under the lock so it cannot
+		// interleave with an apply-loop domain install, and re-reading here picks up
+		// the state that loop just applied.
+		utils.ConfigLock.Lock()
+		config = utils.ReadConfigFromFile()
+		restoreReplicatedDomains(&request, config)
 		utils.SetBaseMainConfig(request)
-		
+		utils.ConfigLock.Unlock()
+
 		utils.TriggerEvent(
 			"cosmos.settings",
 			"Settings updated",

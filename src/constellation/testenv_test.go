@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v2"
 
@@ -39,11 +40,13 @@ func setupTestEnv(t *testing.T, mutate func(*utils.Config)) string {
 	}
 	utils.LoadBaseMainConfig(cfg)
 
-	utils.CloseEmbeddedDB()
+	if err := utils.InitStore(); err != nil {
+		t.Fatal("testenv: InitStore:", err)
+	}
 	resetConstellationGlobals()
 
 	t.Cleanup(func() {
-		utils.CloseEmbeddedDB()
+		utils.CloseStore()
 		resetConstellationGlobals()
 		utils.CONFIGFOLDER = prevFolder
 	})
@@ -60,6 +63,19 @@ func resetConstellationGlobals() {
 	NebulaStarted.Store(false)
 	NebulaHasStarted = false
 	NATSStarted.Store(false)
+
+	oplogAttached.Store(false)
+	oplogHalted.Store(false)
+	oplogStreamSeen.Store(false)
+	oplogAttachedEpoch.Store(0)
+	oplogStreamCheckMu.Lock()
+	oplogStreamCheckedAt = time.Time{}
+	oplogStallCount = 0
+	oplogStallLastApplied = 0
+	oplogStreamCheckMu.Unlock()
+	opWaitersMu.Lock()
+	opWaiters = map[string]chan error{}
+	opWaitersMu.Unlock()
 
 	dnsMux.Lock()
 	DNSStarted = false
@@ -116,4 +132,9 @@ func chdirWithCertBinary(t *testing.T) string {
 	t.Cleanup(func() { os.Chdir(prev) })
 
 	return work
+}
+
+// readConfigFile reads a loose file out of the test CONFIGFOLDER.
+func readConfigFile(name string) ([]byte, error) {
+	return os.ReadFile(utils.CONFIGFOLDER + name)
 }

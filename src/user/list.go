@@ -3,8 +3,7 @@ package user
 import (
 	"net/http"
 	"encoding/json"
-	"github.com/azukaar/cosmos-server/src/utils" 
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"github.com/azukaar/cosmos-server/src/utils"
 	"strconv"
 	"math"
 )
@@ -37,36 +36,13 @@ func UserList(w http.ResponseWriter, req *http.Request) {
 	}
 	
 	if(req.Method == "GET") {
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "users")
-  defer closeDb()
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
-
 		utils.Debug("UserList: List user ")
 
-		userList := []utils.User{}	
-
-		l := int64(math.Max((float64)(maxLimit), (float64)(limit)))
-
-		fOpt := options.FindOptions{
-			Limit: &l,
-		}
+		l := int(math.Max((float64)(maxLimit), (float64)(limit)))
 
 		// TODO: Implement pagination
 
-		cursor, errDB := c.Find(
-			nil,
-			map[string]interface{}{
-				// "_id": map[string]interface{}{
-				// 	"$gt": from,
-				// },
-			},
-			&fOpt,
-		)
-		defer cursor.Close(nil)
+		users, errDB := utils.ListUsersPage(l)
 
 		if errDB != nil {
 			utils.Error("UserList: Error while getting user", errDB)
@@ -74,19 +50,13 @@ func UserList(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		for cursor.Next(nil) {
-			user := utils.User{}
-			errDec := cursor.Decode(&user)
-			if errDec != nil {
-				utils.Error("UserList: Error while decoding user", errDec)
-				utils.HTTPError(w, "User Get Error", http.StatusInternalServerError, "UL001")
-				return
-			}
+		userList := []utils.User{}
+		for _, user := range users {
 			user.Link = "/api/user/" + user.Nickname
 			userList = append(userList, user)
 		}
 
-		
+
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "OK",
 			"data": userList,

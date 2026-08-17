@@ -3,7 +3,6 @@ package constellation
 import (
 	"net/http"
 	"encoding/json"
-	"time"
 	
 	"github.com/azukaar/cosmos-server/src/utils" 
 )
@@ -55,23 +54,9 @@ func DeviceBlock(w http.ResponseWriter, req *http.Request) {
 
 		utils.Log("ConstellationDeviceBlocking: Blocking Device " + deviceName)
 
-		c, closeDb, errCo := utils.GetEmbeddedCollection(utils.GetRootAppId(), "devices")
-  		defer closeDb()
-
-		if errCo != nil {
-				utils.Error("Database Connect", errCo)
-				utils.HTTPError(w, "Database", http.StatusInternalServerError, "DB001")
-				return
-		}
-
-		device := utils.Device{}
-
 		utils.Debug("ConstellationDeviceBlocking: Blocking Device " + deviceName)
 
-		err2 := c.FindOne(nil, map[string]interface{}{
-			"DeviceName": deviceName,
-			"Blocked": false,
-		}).Decode(&device)
+		device, err2 := utils.GetDeviceByName(deviceName, true)
 
 		if err2 == nil {
 			utils.Debug("ConstellationDeviceBlocking: Found Device " + deviceName)
@@ -81,18 +66,15 @@ func DeviceBlock(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 
-			_, err3 := c.UpdateMany(nil, map[string]interface{}{
+			err3 := utils.UpdateDevices(map[string]interface{}{
 				"DeviceName": deviceName,
 			}, map[string]interface{}{
-				"$set": map[string]interface{}{
-					"Blocked": request.Block,
-				},
+				"Blocked": request.Block,
 			})
 
 			if err3 != nil {
 				utils.Error("DeviceBlocking: Error while updating device", err3)
-				utils.HTTPError(w, "Device Creation Error: " + err3.Error(),
-					 http.StatusInternalServerError, "DB001")
+				utils.HTTPStoreError(w, err3, "DB001")
 				return
 			}
 
@@ -101,12 +83,6 @@ func DeviceBlock(w http.ResponseWriter, req *http.Request) {
 			} else {
 				utils.Log("ConstellationDeviceBlocking: Device " + deviceName + " unblocked")
 			}
-			
-			go func() {
-				go SendNewDBSyncMessage()
-				time.Sleep(2 * time.Second)
-				RestartNebula()
-			}()
 		} else {
 			utils.Error("DeviceBlocking: Error while finding device", err2)
 			utils.HTTPError(w, "Device Creation Error: " + err2.Error(),

@@ -4,7 +4,7 @@
     "description": "REST API for Cosmos Cloud server management",
     "title": "Cosmos Server API",
     "contact": {},
-    "version": "0.22.35"
+    "version": "0.23.00-unstable001"
   },
   "paths": {
     "/_logs": {
@@ -3086,6 +3086,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/utils.APIResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/utils.HTTPErrorResult"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/utils.HTTPErrorResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/constellation/force-reform": {
+      "post": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "description": "HA only. Bumps the op-log epoch, drops local JetStream state, blocks the other managers and restarts NATS, leaving this node writable in formation mode so replacements can be enrolled. Does not touch the CA, keys, config or device data.",
+        "tags": [
+          "constellation"
+        ],
+        "summary": "Force the constellation to re-form around this manager",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/utils.APIResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/utils.HTTPErrorResult"
                 }
               }
             }

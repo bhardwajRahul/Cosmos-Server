@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"context"
 	// "fmt"
@@ -10,6 +11,8 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 	"go.mongodb.org/mongo-driver/bson"
+
+	lungo "github.com/256dpi/lungo"
 
 	"github.com/azukaar/cosmos-server/src/utils"
 	"github.com/azukaar/cosmos-server/src/docker"
@@ -26,60 +29,70 @@ func MigratePre014Coll(collection string, from *mongo.Client) {
 	applicationId := utils.GetRootAppId()
 
 	cf := from.Database(name).Collection(applicationId + "_" + collection)
-	ct, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), collection)
-	if err != nil {
-			utils.Error("Error getting collection " + applicationId + "_" + collection + " from database " + name, err)
-			return
-	}
-	defer closeDb()
 
-	// get all documents
-	opts := options.Find()
-	cur, err := cf.Find(context.Background(), bson.D{}, opts)
+	cur, err := cf.Find(context.Background(), bson.D{}, options.Find())
 	if err != nil {
 			utils.Error("Error getting documents from " + collection + " collection", err)
 			return
 	}
 	defer cur.Close(context.Background())
 
-	var batch []interface{}
-	batchSize := 100 // Define a suitable batch size
-
-	for cur.Next(context.Background()) {
-			var elem bson.D
-			if err := cur.Decode(&elem); err != nil {
-					utils.Error("Error decoding document from " + collection + " collection", err)
-					continue
-			}
-
-			batch = append(batch, elem)
-
-			if len(batch) >= batchSize {
-					if _, err := ct.InsertMany(context.Background(), batch); err != nil {
-							utils.Error("Error inserting batch into " + collection + " collection", err)
-					}
-					batch = batch[:0] // Clear the batch
-			}
+	// typed decode + store-layer write
+	switch collection {
+	case "users":
+		users := []utils.User{}
+		if err := cur.All(context.Background(), &users); err != nil {
+			utils.Error("Error decoding documents from " + collection + " collection", err)
+			return
+		}
+		if len(users) == 0 {
+			return
+		}
+		if err := utils.CommitMutation(utils.Mutation{Table: "users", Op: "insertMany", Doc: users}); err != nil {
+			utils.Error("Error inserting documents into " + collection + " collection", err)
+		}
+	case "devices":
+		devices := []utils.ConstellationDevice{}
+		if err := cur.All(context.Background(), &devices); err != nil {
+			utils.Error("Error decoding documents from " + collection + " collection", err)
+			return
+		}
+		if len(devices) == 0 {
+			return
+		}
+		if err := utils.CommitMutation(utils.Mutation{Table: "devices", Op: "insertMany", Doc: devices}); err != nil {
+			utils.Error("Error inserting documents into " + collection + " collection", err)
+		}
+	default:
+		utils.Error("MigratePre014Coll: unknown collection " + collection, nil)
 	}
+}
 
-	// Insert any remaining documents
-	if len(batch) > 0 {
-			if _, err := ct.InsertMany(context.Background(), batch); err != nil {
-					utils.Error("Error inserting remaining documents into " + collection + " collection", err)
-			}
+// migratePre014Needed: only if no legacy lungo file and the store is still empty
+// (auth.db is created by InitStore before migrations, so "auth.db does not exist"
+// is expressed as "store has no data") and MongoDB is configured.
+func migratePre014Needed(config utils.Config) bool {
+	if config.MongoDB == "" {
+		return false
 	}
-
-	if err := cur.Err(); err != nil {
-			utils.Error("Error iterating over documents from " + collection + " collection", err)
+	if _, err := os.Stat(utils.CONFIGFOLDER + "database"); err == nil {
+		return false
 	}
+	// a read failure must skip the migration, never trigger a re-import
+	users, errU := utils.CountUsers()
+	devices, errD := utils.CountDevices(map[string]interface{}{})
+	if errU != nil || errD != nil {
+		utils.Error("MigratePre014: cannot inspect auth.db, skipping migration gate", errU)
+		return false
+	}
+	return users == 0 && devices == 0
 }
 
 
 func MigratePre014() {
 	config := utils.GetMainConfig()
 
-	// check if COSMOS.db does NOT exist
-	if _, err := os.Stat(utils.CONFIGFOLDER + "database"); err != nil && config.MongoDB != "" {
+	if migratePre014Needed(config) {
 		utils.Log("MigratePre014: Migration of database...")
 
 		// connect to MongoDB
@@ -124,25 +137,7 @@ func MigratePre014() {
 		}
 
 		utils.Log("Successfully connected to the database.")
-		
-		ct, closeDb, err := utils.GetEmbeddedCollection(utils.GetRootAppId(), "events")
-		if err != nil {
-				return
-		}
-		defer closeDb()
 
-		// Create a date index
-		model := mongo.IndexModel{
-			Keys: bson.M{"Date": -1},
-		}
-
-		// Creating the index
-		_, err = ct.Indexes().CreateOne(context.Background(), model)
-		if err != nil {
-			utils.Error("Metrics - Create Index", err)
-			return // Handle error appropriately
-		}
-		
 		MigratePre014Coll("users", client)
 		MigratePre014Coll("devices", client)
 
@@ -278,4 +273,78 @@ func MigratePre02231() {
 			return
 		}
 	}
+}
+
+// MigratePre02236 one-shot imports the legacy lungo embedded database into auth.db.
+// The rename to database.backup makes it naturally one-shot. Requires InitStore().
+func MigratePre02236() {
+	dbPath := utils.CONFIGFOLDER + "database"
+	if _, err := os.Stat(dbPath); err != nil {
+		return
+	}
+
+	utils.Log("MigratePre02236: importing legacy embedded database into auth.db...")
+
+	opts := lungo.Options{
+		Store: lungo.NewFileStore(dbPath, 0700),
+	}
+
+	client, engine, err := lungo.Open(nil, opts)
+	if err != nil {
+		utils.MajorError("MigratePre02236: cannot open legacy embedded database", err)
+		return
+	}
+
+	name := os.Getenv("MONGODB_NAME")
+	if name == "" {
+		name = "COSMOS"
+	}
+	applicationId := utils.GetRootAppId()
+
+	users := []utils.User{}
+	devices := []utils.ConstellationDevice{}
+
+	curU, err := client.Database(name).Collection(applicationId + "_users").Find(nil, bson.D{})
+	if err == nil {
+		err = curU.All(nil, &users)
+	}
+	if err != nil {
+		utils.MajorError("MigratePre02236: cannot read legacy users", err)
+		engine.Close()
+		return
+	}
+
+	curD, err := client.Database(name).Collection(applicationId + "_devices").Find(nil, bson.D{})
+	if err == nil {
+		err = curD.All(nil, &devices)
+	}
+	if err != nil {
+		utils.MajorError("MigratePre02236: cannot read legacy devices", err)
+		engine.Close()
+		return
+	}
+
+	engine.Close()
+
+	// one tx via the store layer
+	ms := []utils.Mutation{}
+	if len(users) > 0 {
+		ms = append(ms, utils.Mutation{Table: "users", Op: "insertMany", Doc: users})
+	}
+	if len(devices) > 0 {
+		ms = append(ms, utils.Mutation{Table: "devices", Op: "insertMany", Doc: devices})
+	}
+	if len(ms) > 0 {
+		if err := utils.CommitMutations(ms); err != nil {
+			utils.MajorError("MigratePre02236: cannot import legacy data into auth.db", err)
+			return
+		}
+	}
+
+	if err := os.Rename(dbPath, dbPath+".backup"); err != nil {
+		utils.MajorError("MigratePre02236: cannot rename legacy database file", err)
+		return
+	}
+
+	utils.Log("MigratePre02236: imported " + strconv.Itoa(len(users)) + " users and " + strconv.Itoa(len(devices)) + " devices; legacy file renamed to database.backup")
 }
