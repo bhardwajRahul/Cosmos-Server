@@ -209,13 +209,7 @@ func ExportDocker() {
 			return
 		}
 
-		// Skip database container in puppet mode
 		containerName := strings.TrimPrefix(service.Name, "/")
-		if config.Database.PuppetMode && containerName == config.Database.Hostname {
-			utils.Log("Skipping database container in puppet mode: " + containerName)
-			continue
-		}
-
 		services[containerName] = service
 	}
 

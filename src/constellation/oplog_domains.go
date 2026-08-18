@@ -33,6 +33,7 @@ const (
 	DomainFileCACrt     = "file:ca.crt"
 	DomainFileCAKey     = "file:ca.key"
 	DomainFileRclone    = "file:rclone.conf"
+	DomainDatabase      = "database"
 )
 
 type AuthKeysPayload struct {
@@ -46,6 +47,15 @@ type DNSPayload struct {
 	DNSBlockBlacklist       bool                          `json:"dnsBlockBlacklist"`
 	DNSAdditionalBlocklists []string                      `json:"dnsAdditionalBlocklists"`
 	CustomDNSEntries        []utils.ConstellationDNSEntry `json:"customDNSEntries"`
+}
+
+// DatabasePayload carries the Postgres connection only. NodeName stays
+// node-local: it is this node's metrics identity.
+type DatabasePayload struct {
+	PostgresHost     string `json:"postgresHost"`
+	PostgresDatabase string `json:"postgresDatabase"`
+	PostgresUsername string `json:"postgresUsername"`
+	PostgresPassword string `json:"postgresPassword"`
 }
 
 // FilePayload carries a loose config file as base64. Empty Data means "no such
@@ -177,6 +187,44 @@ func init() {
 		},
 		Snapshot: func() (json.RawMessage, error) {
 			return json.Marshal(utils.GetMainConfig().OpenIDClients)
+		},
+	})
+
+	register(Domain{
+		Name: DomainDatabase,
+		// assign fields individually: DatabaseConfig.NodeName stays node-local
+		Apply: func(state json.RawMessage) error {
+			var p DatabasePayload
+			if err := json.Unmarshal(state, &p); err != nil {
+				return err
+			}
+			config := utils.ReadConfigFromFile()
+			config.Database.PostgresHost = p.PostgresHost
+			config.Database.PostgresDatabase = p.PostgresDatabase
+			config.Database.PostgresUsername = p.PostgresUsername
+			config.Database.PostgresPassword = p.PostgresPassword
+			utils.SetBaseMainConfig(config)
+			return nil
+		},
+		// reconnect only when the connection actually moved
+		React: func(old json.RawMessage, new json.RawMessage) {
+			if bytes.Equal(old, new) {
+				return
+			}
+			go func() {
+				if err := utils.InitMetricsDatabase(); err != nil {
+					utils.Error("[OPLOG] monitoring database reconnect failed", err)
+				}
+			}()
+		},
+		Snapshot: func() (json.RawMessage, error) {
+			d := utils.GetMainConfig().Database
+			return json.Marshal(DatabasePayload{
+				PostgresHost:     d.PostgresHost,
+				PostgresDatabase: d.PostgresDatabase,
+				PostgresUsername: d.PostgresUsername,
+				PostgresPassword: d.PostgresPassword,
+			})
 		},
 	})
 

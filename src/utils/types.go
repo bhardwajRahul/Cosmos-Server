@@ -3,8 +3,6 @@ package utils
 import (
 	"os"
 	"time"
-
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type Role int
@@ -156,7 +154,6 @@ type FileStats struct {
 }
 
 type User struct {
-	ID       primitive.ObjectID `json:"-" bson:"_id,omitempty"`
 	Nickname      string     `validate:"required" json:"nickname" bson:"Nickname"`
 	Password       string    `validate:"required" json:"-" bson:"Password"`
 	RegisterKey       string  `json:"registerKey" bson:"RegisterKey"`
@@ -177,7 +174,6 @@ type User struct {
 
 type Config struct {
 	LoggingLevel LoggingLevel `required,validate:"oneof=DEBUG INFO WARNING ERROR"`
-	MongoDB string
 	Database DatabaseConfig ``
 	DisableUserManagement bool
 	NewInstall bool `validate:"boolean"`
@@ -239,14 +235,15 @@ type SnapRAIDConfig struct {
 	CheckOnFix bool
 }
 
+// DatabaseConfig points the monitoring store at Postgres; empty PostgresHost keeps SQLite.
+// The Postgres* prefix is deliberate: pre-0.23 configs carry Hostname/Username/Password
+// from the Mongo era and must not unmarshal into these fields.
 type DatabaseConfig struct {
-	PuppetMode bool
-	Hostname string
-	DbVolume string
-	ConfigVolume string
-	Version string
-	Username string
-	Password string
+	PostgresHost     string // "host" or "host:port"
+	PostgresDatabase string
+	PostgresUsername string
+	PostgresPassword string
+	NodeName         string // overrides the node column on metrics rows
 }
 
 type HomepageConfig struct {

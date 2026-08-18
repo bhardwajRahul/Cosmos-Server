@@ -8,9 +8,11 @@ import (
 	"errors"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"bufio"
 	"gopkg.in/yaml.v2"
 	"strings"
+	"sort"
 	"io/ioutil"
 	"net"
 	"strconv"
@@ -294,11 +296,15 @@ func stop() {
 }
 
 var restartMutex sync.Mutex
+var restartQueued atomic.Bool
 
 func RestartNebula() {
 	restartMutex.Lock()
 	defer restartMutex.Unlock()
+	restartNebulaLocked()
+}
 
+func restartNebulaLocked() {
 	utils.Log("Restarting Constellation...")
 	deviceCacheMux.Lock()
 	cachedCurrentDevice = nil
@@ -308,6 +314,66 @@ func RestartNebula() {
 	stop()
 	utils.Log("Constellation Init...")
 	Init()
+}
+
+// RequestRestartNebula coalesces reactive restarts (oplog apply, snapshot
+// install) so a burst of device writes triggers one restart, not one each.
+func RequestRestartNebula() {
+	requestRestartNebulaAfter(1 * time.Second)
+}
+
+// restartStaggerSlot must exceed a worst-case restart so at most one server
+// is down at a time during a rolling restart.
+const restartStaggerSlot = 10 * time.Second
+
+// RequestRestartNebulaStaggered delays each node by its rank in the shared
+// device table, turning a thundering-herd restart into a rolling one.
+func RequestRestartNebulaStaggered() {
+	requestRestartNebulaAfter(1*time.Second + time.Duration(restartStaggerRank())*restartStaggerSlot)
+}
+
+func requestRestartNebulaAfter(delay time.Duration) {
+	if !restartQueued.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		time.Sleep(delay)
+		restartMutex.Lock()
+		defer restartMutex.Unlock()
+		restartQueued.Store(false)
+		restartNebulaLocked()
+	}()
+}
+
+// restartStaggerRank is this node's index in the name-sorted list of cosmos
+// servers. Fails toward 0 (restart soonest): a node that cannot place itself
+// must not wait on a schedule it is not part of.
+func restartStaggerRank() int {
+	name, err := GetCurrentDeviceName()
+	if err != nil || name == "" {
+		return 0
+	}
+	devices, err := utils.ListDevices(false)
+	if err != nil {
+		return 0
+	}
+	return staggerRank(name, devices)
+}
+
+func staggerRank(self string, devices []utils.ConstellationDevice) int {
+	peers := []string{}
+	for _, d := range devices {
+		if d.CosmosNode > 0 {
+			peers = append(peers, d.DeviceName)
+		}
+	}
+	sort.Strings(peers)
+	for i, n := range peers {
+		if n == self {
+			return i
+		}
+	}
+	return 0
 }
 
 func ResetNebula() error {
@@ -336,6 +402,17 @@ func ResetNebula() error {
 	if err := utils.ClearFormationWriter(); err != nil {
 		return err
 	}
+
+	// Drop the op-log position too: a stale bootstrapped marker would make the
+	// next constellation created here read-only, and a stale seq means this
+	// node's own first ops are never delivered back to it.
+	if err := utils.SetOplogState(utils.GetOplogEpoch(), 0); err != nil {
+		return err
+	}
+
+	// In-memory flag survives SoftRestartServer (no re-exec); clear it so the
+	// next constellation keeps the formation direct-write path.
+	oplogStreamSeen.Store(false)
 
 	config := utils.ReadConfigFromFile()
 	config.ConstellationConfig.Enabled = false

@@ -123,7 +123,6 @@ const ConfigManagement = () => {
 
       <Formik
         initialValues={{
-          MongoDB: config.MongoDB,
           LoggingLevel: config.LoggingLevel,
           RequireMFA: config.RequireMFA,
           GeoBlocking: config.BlockedCountries,
@@ -182,18 +181,15 @@ const ConfigManagement = () => {
           AdminWhitelistIPs: config.AdminWhitelistIPs && config.AdminWhitelistIPs.join(', '),
           AdminConstellationOnly: config.AdminConstellationOnly,
 
-          PuppetModeEnabled: config.Database.PuppetMode,
-          PuppetModeHostname: config.Database.Hostname,
-          PuppetModeDbVolume: config.Database.DbVolume,
-          PuppetModeConfigVolume: config.Database.ConfigVolume,
-          PuppetModeVersion: config.Database.Version,
-          PuppetModeUsername: config.Database.Username,
-          PuppetModePassword: config.Database.Password,
+          PostgresHost: config.Database.PostgresHost,
+          PostgresDatabase: config.Database.PostgresDatabase,
+          PostgresUsername: config.Database.PostgresUsername,
+          PostgresPassword: config.Database.PostgresPassword,
+          MetricsNodeName: config.Database.NodeName,
         }}
 
         validationSchema={Yup.object().shape({
           Hostname: Yup.string().max(255).required(t('mgmt.config.http.hostnameInput.HostnameValidation')),
-          MongoDB: Yup.string().max(512),
           LoggingLevel: Yup.string().max(255).required(t('mgmt.config.general.logLevelInput.logLevelValidation')),
         })}
 
@@ -206,18 +202,15 @@ const ConfigManagement = () => {
 
           let toSave = {
             ...config,
-            MongoDB: values.MongoDB,
             Licence: values.Licence,
             ServerToken: values.ServerToken,
             Database: {
               ...config.Database,
-              PuppetMode: values.PuppetModeEnabled,
-              Hostname: values.PuppetModeHostname,
-              DbVolume: values.PuppetModeDbVolume,
-              ConfigVolume: values.PuppetModeConfigVolume,
-              Version: values.PuppetModeVersion,
-              Username: values.PuppetModeUsername,
-              Password: values.PuppetModePassword,
+              PostgresHost: values.PostgresHost,
+              PostgresDatabase: values.PostgresDatabase,
+              PostgresUsername: values.PostgresUsername,
+              PostgresPassword: values.PostgresPassword,
+              NodeName: values.MetricsNodeName,
             },
             LoggingLevel: values.LoggingLevel,
             RequireMFA: values.RequireMFA,

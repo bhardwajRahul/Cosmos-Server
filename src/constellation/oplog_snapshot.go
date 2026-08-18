@@ -362,5 +362,5 @@ func afterInstallReaction(before []byte) {
 	if bytes.Equal(before, after) {
 		return
 	}
-	go RestartNebula()
+	RequestRestartNebula()
 }

@@ -7,8 +7,8 @@ import (
 	"github.com/azukaar/cosmos-server/src/utils"
 )
 
-// publishReplicatedDomains publishes the three op-log domains this whole-config
-// PUT can touch. Full-state ops are idempotent, so publishing all three
+// publishReplicatedDomains publishes the four op-log domains this whole-config
+// PUT can touch. Full-state ops are idempotent, so publishing all four
 // unconditionally is cheaper than diffing and cannot miss a change. APITokens and
 // the auth keypair are restored from disk above, so they are not editable here.
 func publishReplicatedDomains(request utils.Config) error {
@@ -26,7 +26,17 @@ func publishReplicatedDomains(request utils.Config) error {
 	if err := constellation.PublishDomainOp(constellation.DomainRoles, request.Roles); err != nil {
 		return err
 	}
-	return constellation.PublishDomainOp(constellation.DomainOpenIDClients, request.OpenIDClients)
+	if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, request.OpenIDClients); err != nil {
+		return err
+	}
+	// the real password, restored above — publishing before that restore would send
+	// the literal "***" to every node
+	return constellation.PublishDomainOp(constellation.DomainDatabase, constellation.DatabasePayload{
+		PostgresHost:     request.Database.PostgresHost,
+		PostgresDatabase: request.Database.PostgresDatabase,
+		PostgresUsername: request.Database.PostgresUsername,
+		PostgresPassword: request.Database.PostgresPassword,
+	})
 }
 
 // restoreReplicatedDomains takes the replicated fields from the freshly applied
@@ -42,6 +52,11 @@ func restoreReplicatedDomains(request *utils.Config, config utils.Config) {
 	request.ConstellationConfig.CustomDNSEntries = config.ConstellationConfig.CustomDNSEntries
 	request.Roles = config.Roles
 	request.OpenIDClients = config.OpenIDClients
+	// Database.NodeName stays node-local from the request, like the ConstellationConfig fields above
+	request.Database.PostgresHost = config.Database.PostgresHost
+	request.Database.PostgresDatabase = config.Database.PostgresDatabase
+	request.Database.PostgresUsername = config.Database.PostgresUsername
+	request.Database.PostgresPassword = config.Database.PostgresPassword
 }
 
 // ConfigApiSet godoc
@@ -99,9 +114,6 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 		}
 
 		// restore credential fields if they were masked (sent as "***")
-		if request.MongoDB == "***" {
-			request.MongoDB = config.MongoDB
-		}
 		if request.EmailConfig.Password == "***" {
 			request.EmailConfig.Password = config.EmailConfig.Password
 		}
@@ -111,11 +123,8 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 		if request.EmailConfig.Host == "***" {
 			request.EmailConfig.Host = config.EmailConfig.Host
 		}
-		if request.Database.Password == "***" {
-			request.Database.Password = config.Database.Password
-		}
-		if request.Database.Username == "***" {
-			request.Database.Username = config.Database.Username
+		if request.Database.PostgresPassword == "***" {
+			request.Database.PostgresPassword = config.Database.PostgresPassword
 		}
 		if request.Licence == "***" {
 			request.Licence = config.Licence

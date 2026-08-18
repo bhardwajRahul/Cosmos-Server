@@ -88,6 +88,10 @@ func PushRequestMetrics(route utils.ProxyRouteConfig, statusCode int, TimeStarte
 }
 
 func PushShieldMetrics(reason string) {
+	if utils.GetMainConfig().MonitoringDisabled {
+		return
+	}
+
 	reasonStr := map[string]string{
 		"bots": "Bots",
 		"geo": "By Geolocation",

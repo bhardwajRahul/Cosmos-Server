@@ -599,7 +599,10 @@ func oplogApplyEnvelope(env OpEnvelope, seq uint64) error {
 func oplogApplyDomainEnvelope(env OpEnvelope, seq uint64) error {
 	d, ok := oplogDomains[env.Domain]
 	if !ok {
-		return errors.New("oplog: unknown domain " + env.Domain)
+		// a domain from a newer node: skip it so the loop stays contiguous
+		// through a rolling upgrade
+		utils.Warn("[OPLOG] unknown domain " + env.Domain + " at seq " + strconv.FormatUint(seq, 10) + ", skipping entry")
+		return utils.CommitOplogSeq(seq)
 	}
 
 	old, _ := d.Snapshot()
@@ -629,23 +632,30 @@ func oplogApplyDomainEnvelope(env OpEnvelope, seq uint64) error {
 	return nil
 }
 
-// deviceTopologyFields are the columns that reshape the nebula mesh or the NATS
-// credential set; anything else is cosmetic to the network.
-var deviceTopologyFields = map[string]bool{
+// deviceGlobalFields are the columns baked into every node's nebula.yml or
+// NATS credential set; a change restarts the whole mesh.
+var deviceGlobalFields = map[string]bool{
 	"DeviceName":     true,
 	"IP":             true,
 	"Blocked":        true,
 	"CosmosNode":     true,
 	"IsLighthouse":   true,
 	"IsRelay":        true,
-	"IsExitNode":     true,
-	"IsLoadBalancer": true,
 	"PublicHostname": true,
 	"Port":           true,
 	"PublicKey":      true,
 	"APIKey":         true,
 	"Fingerprint":    true,
 }
+
+// deviceSelfRestartFields only enter the edited device's own config; other
+// nodes see them through heartbeats, which read the device cache.
+var deviceSelfRestartFields = map[string]bool{
+	"IsExitNode": true,
+}
+
+// Deliberately in neither set: IsLoadBalancer is read live from the device
+// cache by GetLocalTunnelCache; Tags, Nickname and Invisible are cosmetic.
 
 // oplogReactToTableOp bounces only what the change actually invalidates: user
 // rows need nothing, a tag rename needs the device cache, and only a real
@@ -657,15 +667,36 @@ func oplogReactToTableOp(m utils.Mutation, pre []utils.ConstellationDevice) {
 
 	switch m.Op {
 	case "insert", "insertMany", "delete", "deleteMany":
-		go RestartNebula()
+		RequestRestartNebulaStaggered()
 		return
 	}
 
 	fields, _ := m.Doc.(map[string]interface{})
-	if utils.DeviceFieldsChanged(pre, fields, deviceTopologyFields) {
-		go RestartNebula()
+	if utils.DeviceFieldsChanged(pre, fields, deviceGlobalFields) {
+		RequestRestartNebulaStaggered()
+		return
+	}
+
+	if utils.DeviceFieldsChanged(pre, fields, deviceSelfRestartFields) && opTargetsCurrentDevice(pre) {
+		RequestRestartNebula()
 		return
 	}
 
 	go refreshDeviceCache()
+}
+
+// opTargetsCurrentDevice reports whether any matched pre-image row is this
+// node. Fails toward restarting: a node that cannot name itself must assume
+// the op was about it.
+func opTargetsCurrentDevice(pre []utils.ConstellationDevice) bool {
+	name, err := GetCurrentDeviceName()
+	if err != nil || name == "" {
+		return true
+	}
+	for _, d := range pre {
+		if d.DeviceName == name {
+			return true
+		}
+	}
+	return false
 }

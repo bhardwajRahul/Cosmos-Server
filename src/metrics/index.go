@@ -1,44 +1,69 @@
-package metrics 
+package metrics
 
 import (
-	"time"
 	"strconv"
+	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
-	
 	"github.com/azukaar/cosmos-server/src/utils"
-
-	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type DataDef struct {
-	Max uint64 
-	Period time.Duration
-	Label string
-	AggloType string
-	SetOperation string
-	Scale int
-	Unit string
-	Decumulate bool
+	Max           uint64
+	Period        time.Duration
+	Label         string
+	AggloType     string
+	SetOperation  string
+	Scale         int
+	Unit          string
+	Decumulate    bool
 	DecumulatePos bool
-	Object string
+	Object        string
 }
 
 type DataPush struct {
-	Date time.Time
-	Key string
-	Value int
-	Max uint64
-	Period time.Duration
-	Expire time.Time
-	Label string
-	AvgIndex int
-	AggloType string
-	Scale int
-	Unit string
-	Decumulate bool
+	Date          time.Time
+	Key           string
+	Value         int
+	Max           uint64
+	Period        time.Duration
+	Expire        time.Time
+	Label         string
+	AvgIndex      int
+	AggloType     string
+	SetOperation  string
+	Scale         int
+	Unit          string
+	Decumulate    bool
 	DecumulatePos bool
-	Object string
+	Object        string
+	// Written / Contributed track what the last successful flush pushed, so re-flushing
+	// an open bucket corrects its aggregation contribution instead of double counting.
+	Written     int
+	Contributed bool
+}
+
+type DataDefDBEntry struct {
+	Date      time.Time
+	Value     int
+	Processed bool
+	// For agglomeration
+	AvgIndex    int
+	AggloTo     time.Time
+	AggloExpire time.Time
+}
+
+type DataDefDB struct {
+	Values     []DataDefDBEntry
+	ValuesAggl map[string]DataDefDBEntry
+	LastUpdate time.Time
+	TimeScale  float64
+	Max        uint64
+	Label      string
+	Key        string
+	AggloType  string
+	Scale      int
+	Unit       string
+	Object     string
 }
 
 var dataBuffer = map[string]DataPush{}
@@ -50,8 +75,8 @@ func GetDataBuffer() map[string]DataPush {
 }
 
 func MergeMetric(SetOperation string, currentValue int, newValue int, avgIndex int) int {
-	if SetOperation == "" {  
-		return newValue    
+	if SetOperation == "" {
+		return newValue
 	} else if SetOperation == "max" {
 		if newValue > currentValue {
 			return newValue
@@ -68,86 +93,98 @@ func MergeMetric(SetOperation string, currentValue int, newValue int, avgIndex i
 		}
 	} else if SetOperation == "avg" {
 		if avgIndex == 0 {
-			avgIndex = 1
 			return newValue
-		} else {
-			return (currentValue * (avgIndex) + newValue) / (avgIndex + 1)
 		}
+		return (currentValue*avgIndex + newValue) / (avgIndex + 1)
 	} else {
 		return newValue
 	}
 }
 
+// SaveMetrics flushes every open bucket on each tick; only the delta since the
+// last flush reaches the aggregation pools.
 func SaveMetrics() {
 	utils.Debug("Metrics - Saving data")
-	utils.Debug("Time: " + time.Now().String())
-
-	c, errCo := utils.GetCollection(utils.GetRootAppId(), "metrics")
-	if errCo != nil {
-		utils.Error("Metrics - Database Connect", errCo)
-		return
-	}
 
 	lock <- true
 	defer func() { <-lock }()
 
-	var operations []mongo.WriteModel
+	now := time.Now()
 
-	for dpkey, dp := range dataBuffer {
-		if dp.Expire.Before(time.Now()) {
-			delete(dataBuffer, dpkey)
-
-			scale := 1
-			if dp.Scale != 0 {
-				scale = dp.Scale
-			}
-
-			filter := bson.M{"Key": dp.Key}
-			update := bson.M{
-				"$push": bson.M{"Values": 
-					bson.M{
-						"Date": dp.Date,
-						"Value": dp.Value,
-					},
-				},
-				"$set": bson.M{
-					"LastUpdate": dp.Date,
-					"Max": dp.Max,
-					"Label": dp.Label,
-					"AggloType": dp.AggloType,
-					"Scale": scale,
-					"Unit": dp.Unit,
-					"Object": dp.Object,
-					"TimeScale": float64(dp.Period / (time.Second * 30)),
-				},
-			}
-
-			CheckAlerts(dp.Key, "latest", utils.AlertMetricTrack{
-				Key: dp.Key,
-				Object: dp.Object,
-				Max: dp.Max,
-			}, dp.Value)
-			
-			// Create a new UpdateOneModel
-			operation := mongo.NewUpdateOneModel()
-			operation.SetFilter(filter)
-			operation.SetUpdate(update)
-			operation.SetUpsert(true)
-			
-			// Append to operations
-			operations = append(operations, operation)
+	flushKeys := []string{}
+	buckets := []DataPush{}
+	for cacheKey, dp := range dataBuffer {
+		if dp.Contributed && dp.Value == dp.Written {
+			continue
 		}
+		flushKeys = append(flushKeys, cacheKey)
+		buckets = append(buckets, dp)
 	}
 
-	if len(operations) > 0 {
-		_, err := c.BulkWrite(nil, operations)
-		if err != nil {
-			utils.Error("Metrics - Bulk Write Error", err)
+	if len(buckets) > 0 {
+		if err := writeBuckets(buckets); err != nil {
+			utils.Error("Metrics - Save Error", err)
 		} else {
-			utils.Debug("Data - Bulk Saved " + strconv.Itoa(len(operations)) + " entries")
+			for i, cacheKey := range flushKeys {
+				dp := dataBuffer[cacheKey]
+				dp.Written = buckets[i].Value
+				dp.Contributed = true
+				dataBuffer[cacheKey] = dp
+			}
+			utils.Debug("Data - Saved " + strconv.Itoa(len(buckets)) + " buckets")
 		}
 	} else {
 		utils.Debug("No data to save")
+	}
+
+	// latest-period alerts fire once, when the bucket closes
+	for cacheKey, dp := range dataBuffer {
+		if dp.Expire.After(now) {
+			continue
+		}
+		CheckAlerts(dp.Key, "latest", utils.AlertMetricTrack{
+			Key:    dp.Key,
+			Object: dp.Object,
+			Max:    dp.Max,
+		}, dp.Value)
+		delete(dataBuffer, cacheKey)
+	}
+
+	checkPoolAlerts(now)
+}
+
+var lastHourPool time.Time
+var lastDayPool time.Time
+
+// checkPoolAlerts fires hourly/daily alerts on the pool that just closed.
+func checkPoolAlerts(now time.Time) {
+	hour := ModuloTime(now, time.Hour)
+	day := ModuloTime(now, 24*time.Hour)
+
+	if !lastHourPool.IsZero() && !hour.Equal(lastHourPool) {
+		runPoolAlerts(granularityHour, "hourly", lastHourPool)
+	}
+	if !lastDayPool.IsZero() && !day.Equal(lastDayPool) {
+		runPoolAlerts(granularityDay, "daily", lastDayPool)
+	}
+
+	lastHourPool = hour
+	lastDayPool = day
+}
+
+func runPoolAlerts(granularity string, period string, poolDate time.Time) {
+	pools, err := poolValues(granularity, poolDate)
+	if err != nil {
+		utils.Error("Metrics - Pool alerts", err)
+		return
+	}
+
+	for _, pool := range pools {
+		CheckAlerts(pool.Key, period, utils.AlertMetricTrack{
+			Key:    pool.Key,
+			Object: pool.Object,
+			Max:    pool.Max,
+		}, pool.Value)
 	}
 }
 
@@ -166,69 +203,78 @@ func ModuloTime(start time.Time, modulo time.Duration) time.Time {
 var lastInserted = map[string]int{}
 
 func PushSetMetric(key string, value int, def DataDef) {
-	go func() {
-		originalValue := value
-		key = "cosmos." + key
-		date := ModuloTime(time.Now(), def.Period)
-		cacheKey := key + date.String()
+	go pushSetMetric(key, value, def)
+}
 
-		lock <- true
-		defer func() { <-lock }()
+func pushSetMetric(key string, value int, def DataDef) {
+	originalValue := value
+	key = "cosmos." + key
+	date := ModuloTime(time.Now(), def.Period)
+	cacheKey := key + date.String()
 
-		if def.Decumulate || def.DecumulatePos {
-			if lastInserted[key] != 0 {
-				value = value - lastInserted[key]
-				if def.DecumulatePos && value < 0 {
-					value = 0
-				}
-			} else {
+	lock <- true
+	defer func() { <-lock }()
+
+	if def.Decumulate || def.DecumulatePos {
+		if lastInserted[key] != 0 {
+			value = value - lastInserted[key]
+			if def.DecumulatePos && value < 0 {
 				value = 0
 			}
-		}
-
-		if dp, ok := dataBuffer[cacheKey]; ok {
-			value = MergeMetric(def.SetOperation, dp.Value, value, dp.AvgIndex)    
-
-			dp.Max = def.Max
-			dp.Value = value
-			if def.SetOperation == "avg" {
-				dp.AvgIndex++
-			}
-
-			dataBuffer[cacheKey] = dp
 		} else {
-			dataBuffer[cacheKey] = DataPush{
-				Date:   date,
-				Expire: ModuloTime(time.Now().Add(def.Period), def.Period),
-				Key:    key,
-				Value:  value,
-				Max:    def.Max,
-				Label:  def.Label,
-				AggloType: def.AggloType,
-				Scale: def.Scale,
-				Unit: def.Unit,
-				Object: def.Object,
-				Period: def.Period,
-			}
+			value = 0
+		}
+	}
+
+	if dp, ok := dataBuffer[cacheKey]; ok {
+		value = MergeMetric(def.SetOperation, dp.Value, value, dp.AvgIndex)
+
+		dp.Max = def.Max
+		dp.Value = value
+		if def.SetOperation == "avg" {
+			dp.AvgIndex++
 		}
 
-		lastInserted[key] = originalValue
-	}()
+		dataBuffer[cacheKey] = dp
+	} else {
+		// the first sample already counts, or the running average would discard it
+		avgIndex := 0
+		if def.SetOperation == "avg" {
+			avgIndex = 1
+		}
+
+		dataBuffer[cacheKey] = DataPush{
+			Date:         date,
+			Expire:       ModuloTime(time.Now().Add(def.Period), def.Period),
+			Key:          key,
+			Value:        value,
+			AvgIndex:     avgIndex,
+			Max:          def.Max,
+			Label:        def.Label,
+			AggloType:    def.AggloType,
+			SetOperation: def.SetOperation,
+			Scale:        def.Scale,
+			Unit:         def.Unit,
+			Object:       def.Object,
+			Period:       def.Period,
+		}
+	}
+
+	lastInserted[key] = originalValue
 }
 
 func Run() {
 	nextTime := ModuloTime(time.Now().Add(time.Second*30), time.Second*30)
 	nextTime = nextTime.Add(time.Second * 2)
 
-	
 	if utils.GetMainConfig().MonitoringDisabled {
 		time.AfterFunc(nextTime.Sub(time.Now()), func() {
 			Run()
 		})
-		
+
 		return
 	}
-	
+
 	utils.Debug("Metrics - Run - Next run at " + nextTime.String())
 
 	time.AfterFunc(nextTime.Sub(time.Now()), func() {
@@ -244,7 +290,6 @@ func Run() {
 func Init() {
 	lastInserted = map[string]int{}
 
-	InitAggl()
 	Run()
 
 	if !utils.GetMainConfig().MonitoringDisabled {

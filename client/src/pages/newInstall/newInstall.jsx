@@ -14,7 +14,6 @@ import { useEffect, useState } from 'react';
 
 import * as API from '../../api';
 import { Formik } from 'formik';
-import LogsInModal from '../../components/logsInModal';
 import { CosmosCheckbox, CosmosInputPassword, CosmosInputText, CosmosSelect } from '../config/users/formShortcuts';
 import AnimateButton from '../../components/@extended/AnimateButton';
 import { Box } from '@mui/system';
@@ -55,9 +54,6 @@ const NewInstall = () => {
     const [status, setStatus] = useState(null);
     const [counter, setCounter] = useState(0);
     let [hostname, setHostname] = useState('');
-    const [databaseEnable, setDatabaseEnable] = useState(true);
-    const [pullRequest, setPullRequest] = useState(null);
-    const [pullRequestOnSuccess, setPullRequestOnSuccess] = useState(null);
     const [hostError, setHostError] = useState(null);
     const [hostIp, setHostIp] = useState(null);
     const [cleanInstall, setCleanInstall] = useState(true);
@@ -80,12 +76,6 @@ const NewInstall = () => {
     useEffect(() => {
         refreshStatus();
     }, [counter]);
-    
-    useEffect(() => {
-        if(activeStep == 4 && status && !databaseEnable) {
-            setActiveStep(5);
-        }
-    }, [activeStep, status]);
 
     const getHTTPSOptions = (hostname) => {
         if(!hostname) {
@@ -165,104 +155,13 @@ const NewInstall = () => {
                 <div>
                 <QuestionCircleOutlined /> {t('newInstall.dbText')}
                 </div>
-                {(status && status.database) ? 
-                    <Alert severity="success">
-                        {t('newInstall.dbConnected')}
-                    </Alert> :
-                    <><Alert severity="error">
-                        {t('newInstall.dbNotConnected')}
-                    </Alert>
-                    <div>
-                    <Formik
-                        initialValues={{
-                            DBMode: "Create"
-                        }}
-                        validate={(values) => {
-                        }}
-                        onSubmit={async (values, { setErrors, setStatus, setSubmitting }) => {
-                            setSubmitting(true);
-                            
-                            setPullRequest(() => ((cb) => {
-                                return API.newInstall({
-                                    step: "2",
-                                    MongoDBMode: values.DBMode,
-                                    MongoDB: values.MongoDB,
-                                }, cb)
-                            }));
-
-                            return new Promise(() => {});
-                        }}>
-                        {(formik) => (
-                            <form noValidate onSubmit={formik.handleSubmit}>
-                                {pullRequest && <LogsInModal
-                                    request={pullRequest}
-                                    title={t('newInstall.dbInstalling')}
-                                    OnSuccess={() => {
-                                        if(formik.values.DBMode === "DisableUserManagement") {
-                                            setDatabaseEnable(false);
-                                        }
-                                        pullRequestOnSuccess();
-                                        return API.getStatus().then((res) => {
-                                            formik.setSubmitting(false);
-                                            formik.setStatus({ success: true });
-                                        });
-                                    }}
-                                    OnError={(error) => {
-                                        formik.setStatus({ success: false });
-                                        formik.setErrors({ submit: error.message });
-                                        formik.setSubmitting(false);
-                                        console.error(error)
-                                        pullRequestOnSuccess();
-                                    }}
-                                    OnClose={() => {
-                                        setPullRequest(null);
-                                    }}
-                                />}
-                                <Stack item xs={12} spacing={2}>
-                                <CosmosSelect
-                                    name="DBMode"
-                                    label={t('newInstall.dbSelection.dbLabel')}
-                                    formik={formik}
-                                    options={[
-                                        ["Create", t('newInstall.dbSelection.createChoice')],
-                                        ["Provided", t('newInstall.dbSelection.providedChoice')],
-                                        ["DisableUserManagement", t('newInstall.dbSelection.disabledChoice')],
-                                    ]}
-                                />
-                                {formik.values.DBMode === "Provided" && (
-                                    <>
-                                    <CosmosInputText
-                                        name="MongoDB"
-                                        label={t('newInstall.dbUrlInput.dbUrlLabel')}
-                                        placeholder={"mongodb://user:password@localhost:27017"}
-                                        formik={formik}
-                                    />
-                                    </>
-                                )}
-                                {formik.errors.submit && (
-                                  <Grid item xs={12}>
-                                    <FormHelperText error>{formik.errors.submit}</FormHelperText>
-                                  </Grid>
-                                )}
-                                <AnimateButton>
-                                    <Button
-                                        type="submit"
-                                        variant="contained"
-                                        color="primary"
-                                        disabled={formik.isSubmitting}
-                                        fullWidth>
-                                        {formik.isSubmitting ? t('newInstall.loading') : (
-                                            formik.values.DBMode === "DisableUserManagement" ? t('newInstall.usermgmt.disableButton') : t('mgmt.servapps.containers.terminal.connectButton')
-                                        )}
-                                    </Button>
-                                </AnimateButton>
-                                </Stack>
-                            </form>
-                        )}
-                    </Formik>
-                    </div>
-                    </>
-                }
+                {status && (status.database ?
+                <Alert severity="success">
+                    {t('newInstall.dbConnected')}
+                </Alert> :
+                <Alert severity="error">
+                    {t('newInstall.dbNotConnected')}
+                </Alert>)}
                 {(status && status.database) ? (
                     <div>
                         <center>
@@ -602,11 +501,8 @@ const NewInstall = () => {
                         variant="contained"
                         startIcon={<LeftOutlined />}
                         onClick={() => {
-                            if(activeStep == 5 && !databaseEnable) {
-                                setActiveStep(activeStep - 2)
-                            }
                             setActiveStep(activeStep - 1)
-                        }} 
+                        }}
                         disabled={activeStep <= 0}
                     >{t('global.backAction')}</Button>
 

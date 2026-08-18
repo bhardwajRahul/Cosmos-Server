@@ -682,8 +682,6 @@ definitions:
         type: string
       marketConfig:
         $ref: '#/definitions/utils.MarketConfig'
-      mongoDB:
-        type: string
       monitoringAlerts:
         additionalProperties:
           $ref: '#/definitions/utils.Alert'
@@ -737,8 +735,6 @@ definitions:
         type: string
       httpsCertificateMode:
         type: string
-      mongodb:
-        type: string
       mongodbMode:
         type: string
       nickname:
@@ -788,8 +784,6 @@ definitions:
         description: |-
           Optional: Pro licence key — stored on the lighthouse config and
           validated via utils.ProcessLicence at the end of setup.
-        type: string
-      mongodb:
         type: string
       mongodbMode:
         description: Database
@@ -1596,19 +1590,17 @@ definitions:
     type: object
   utils.DatabaseConfig:
     properties:
-      configVolume:
+      nodeName:
+        description: overrides the node column on metrics rows
         type: string
-      dbVolume:
+      postgresDatabase:
         type: string
-      hostname:
+      postgresHost:
+        description: '"host" or "host:port"'
         type: string
-      password:
+      postgresPassword:
         type: string
-      puppetMode:
-        type: boolean
-      username:
-        type: string
-      version:
+      postgresUsername:
         type: string
     type: object
   utils.DockerConfig:
@@ -4323,11 +4315,11 @@ paths:
         in: query
         name: search
         type: string
-      - description: BSON query as JSON string
+      - description: Filter as a JSON object
         in: query
         name: query
         type: string
-      - description: Pagination cursor (ObjectID hex string)
+      - description: Pagination cursor (event id)
         in: query
         name: page
         type: string
@@ -4339,6 +4331,10 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/utils.HTTPErrorResult'
         "403":
           description: Forbidden
           schema:
@@ -5514,7 +5510,7 @@ paths:
   /api/notifications:
     get:
       parameters:
-      - description: Pagination cursor (ObjectID hex string for older notifications)
+      - description: Pagination cursor (notification id for older notifications)
         in: query
         name: from
         type: string
@@ -5542,7 +5538,7 @@ paths:
   /api/notifications/read:
     get:
       parameters:
-      - description: Comma-separated list of notification ObjectID hex strings
+      - description: Comma-separated list of notification ids
         in: query
         name: ids
         required: true

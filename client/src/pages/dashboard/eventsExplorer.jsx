@@ -18,7 +18,8 @@ const EventsExplorer = ({from, to, xAxis, zoom, slot, initLevel, initSearch = ''
 	const [debouncedSearch, setDebouncedSearch] = useState(search);
 	const [total, setTotal] = useState(0);
 	const [remains, setRemains] = useState(0);
-	const [page, setPage] = useState(0);
+	// cursor is opaque (server-side id of the last row), '' means first page
+	const [page, setPage] = useState('');
 	const [logLevel, setLogLevel] = useState(initLevel || 'success');
 
 	if(typeof from != 'undefined' && typeof to != 'undefined') {
@@ -91,7 +92,7 @@ const EventsExplorer = ({from, to, xAxis, zoom, slot, initLevel, initSearch = ''
 	}
 
 	useEffect(() => {
-		setPage(0);
+		setPage('');
 		if (debouncedSearch.length === 0 || debouncedSearch.length > 2) {
 			refresh("");
 		}

@@ -365,9 +365,6 @@ func LoadBaseMainConfig(config Config) {
 	if os.Getenv("COSMOS_LOG_LEVEL") != "" {
 		main.LoggingLevel = (LoggingLevel)(os.Getenv("COSMOS_LOG_LEVEL"))
 	}
-	if os.Getenv("COSMOS_MONGODB") != "" {
-		main.MongoDB = os.Getenv("COSMOS_MONGODB")
-	}
 	if os.Getenv("COSMOS_SERVER_COUNTRY") != "" {
 		main.ServerCountry = os.Getenv("COSMOS_SERVER_COUNTRY")
 	}
@@ -481,8 +478,6 @@ func RestartServer(code int) {
 }
 
 func SoftRestartServer() {
-	DisconnectDB()
-	
 	ProcessLicence()
 
 	RestartHTTPServer()

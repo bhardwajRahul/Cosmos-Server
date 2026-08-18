@@ -325,15 +325,14 @@ func cosmos() {
 
 	if !config.NewInstall {
 		MigratePre013()
-		MigratePre014()
 		MigratePre02231()
 		MigratePre02236()
 
 		utils.CheckInternet()
 
-		docker.CheckPuppetDB()
-
-		utils.InitDBBuffers()
+		if err := utils.InitMetricsDatabase(); err != nil {
+			utils.MajorError("Cannot open the monitoring database", err)
+		}
 
 		utils.Log("Starting monitoring services...")
 

@@ -41,17 +41,6 @@ func StatusRoute(w http.ResponseWriter, req *http.Request) {
 	if(req.Method == "GET") {
 		utils.Log("API: Status")
 		
-		if config.NewInstall {
-			if(!config.DisableUserManagement) {
-				err := utils.DB()
-				if err != nil {
-					utils.Error("Status: Database error", err)
-				}
-			} else {
-				utils.Log("Status: User management is disabled, skipping database check")
-			}
-		}
-
 		if(!docker.DockerIsConnected.Load()) {
 			ed := docker.Connect()
 			if ed != nil {
@@ -192,7 +181,6 @@ func MemStatusRoute(w http.ResponseWriter, req *http.Request) {
 				"UpdateAvailable": getRealSizeOf(utils.UpdateAvailable),
 				"LetsEncryptErrors": getRealSizeOf(utils.LetsEncryptErrors),
 				"BannedIPs": getRealSizeOf2(utils.BannedIPs),
-				"WriteBuffer": getRealSizeOf2(utils.GetWriteBuffer()),
 				"Shield": proxy.GetShield(),
 				"ActiveProxies": getRealSizeOf2(proxy.GetActiveProxies()),
 				"Markets": getRealSizeOf(market.GetCachedMarket()),

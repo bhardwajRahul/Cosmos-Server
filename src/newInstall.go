@@ -10,23 +10,11 @@ import (
 
 	"github.com/azukaar/cosmos-server/src/configapi"
 	"github.com/azukaar/cosmos-server/src/constellation"
-	"github.com/azukaar/cosmos-server/src/docker"
 	"github.com/azukaar/cosmos-server/src/utils"
 )
 
-func waitForDB() {
-	time.Sleep(1 * time.Second)
-	err := utils.DB()
-	if err != nil {
-		utils.Debug("DB error: " + err.Error())
-		utils.Warn("DB Not ready yet")
-		waitForDB()
-	}
-}
-
 type NewInstallJSON struct {
 	MongoDBMode string `json:"mongodbMode"`
-	MongoDB string `json:"mongodb"`
 	HTTPSCertificateMode string `json:"httpsCertificateMode"`
 	TLSCert string `json:"tlsCert"`
 	TLSKey string `json:"tlsKey"`
@@ -97,48 +85,16 @@ func NewInstallRoute(w http.ResponseWriter, req *http.Request) {
 				os.RemoveAll("/config")
 				os.Mkdir("/config", 0700)
 			}
-			utils.DisconnectDB()
 			LoadConfig()
 		}
 		if(request.Step == "2") {
-			utils.Log("NewInstall: Step Database")
-			// User Management & Mongo DB
-			if(request.MongoDBMode == "DisableUserManagement") {
-				utils.Log("NewInstall: Disable User Management")
+			// there is no database to provision anymore; tolerated so older clients
+			// walking the numbered steps still succeed
+			utils.Log("NewInstall: Step Database (no-op)")
+			if request.MongoDBMode == "DisableUserManagement" {
 				newConfig.DisableUserManagement = true
 				utils.SaveConfigTofile(newConfig)
 				utils.LoadBaseMainConfig(newConfig)
-			} else if (request.MongoDBMode == "Provided") {
-				utils.Log("NewInstall: DB Provided")
-				newConfig.DisableUserManagement = false
-				newConfig.MongoDB = request.MongoDB
-				newConfig.Database.PuppetMode = false
-				utils.SaveConfigTofile(newConfig)
-				utils.LoadBaseMainConfig(newConfig)
-			} else if (request.MongoDBMode == "Create") {
-				utils.Log("NewInstall: Create DB")
-				newConfig.DisableUserManagement = false
-				newConfig.MongoDB = ""
-
-				strco, err := docker.NewDB(w, req)
-				if err != nil {
-					utils.Error("NewInstall: Error creating MongoDB", err)
-					return
-				}
-
-				newConfig.Database = strco
-				utils.SaveConfigTofile(newConfig)
-				utils.LoadBaseMainConfig(newConfig)
-				utils.Log("NewInstall: MongoDB created, waiting for it to be ready")
-				waitForDB()
-				w.WriteHeader(http.StatusOK)
-				return
-			} else {
-				utils.Log("NewInstall: Invalid MongoDBMode")
-				utils.Error("NewInstall: Invalid MongoDBMode", nil)
-				utils.HTTPError(w, "New Install: Invalid MongoDBMode",
-					http.StatusInternalServerError, "NI001")
-				return
 			}
 		} else if (request.Step == "3") {
 			// HTTPS Certificate Mode & Certs & Let's Encrypt
@@ -222,20 +178,9 @@ func NewInstallRoute(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// noopResponseWriter discards all output — used to call docker.NewDB without streaming.
-type noopResponseWriter struct {
-	header http.Header
-}
-
-func (n *noopResponseWriter) Header() http.Header        { return n.header }
-func (n *noopResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (n *noopResponseWriter) WriteHeader(int)             {}
-func (n *noopResponseWriter) Flush()                      {}
-
 type SetupJSON struct {
 	// Database
 	MongoDBMode string `json:"mongodbMode"`
-	MongoDB     string `json:"mongodb"`
 
 	// HTTPS
 	Hostname               string            `json:"hostname"`
@@ -307,50 +252,23 @@ func SetupRoute(w http.ResponseWriter, req *http.Request) {
 			os.RemoveAll("/config")
 			os.Mkdir("/config", 0700)
 		}
-		utils.DisconnectDB()
 		LoadConfig()
 	}
 
 	config := utils.GetBaseMainConfig()
 
 	// ── Step 1: Database ──────────────────────────────────────────────
-	if request.MongoDBMode == "" {
-		utils.HTTPError(w, "mongodbMode is required", http.StatusBadRequest, "SU003")
-		return
-	}
-
-	switch request.MongoDBMode {
-	case "DisableUserManagement":
+	// Monitoring runs on the local SQL store, so the only thing left to decide here
+	// is user management. Legacy mongodbMode values are accepted and ignored.
+	if request.MongoDBMode == "DisableUserManagement" {
 		utils.Log("Setup: Disable User Management")
 		config.DisableUserManagement = true
-	case "Provided":
-		utils.Log("Setup: DB Provided")
+	} else {
 		config.DisableUserManagement = false
-		config.MongoDB = request.MongoDB
-		config.Database.PuppetMode = false
-	case "Create":
-		utils.Log("Setup: Create DB")
-		config.DisableUserManagement = false
-		config.MongoDB = ""
-		noop := &noopResponseWriter{header: make(http.Header)}
-		dbConf, err := docker.NewDB(noop, req)
-		if err != nil {
-			utils.Error("Setup: Error creating MongoDB", err)
-			utils.HTTPError(w, "Error creating MongoDB: "+err.Error(), http.StatusInternalServerError, "SU004")
-			return
-		}
-		config.Database = dbConf
-	default:
-		utils.HTTPError(w, "Invalid mongodbMode", http.StatusBadRequest, "SU003")
-		return
 	}
 
 	utils.SaveConfigTofile(config)
 	utils.LoadBaseMainConfig(config)
-
-	if !config.DisableUserManagement {
-		waitForDB()
-	}
 
 	// ── Step 1b: Licence (optional) ───────────────────────────────────
 	// Persist the licence before constellation join so the joining flow

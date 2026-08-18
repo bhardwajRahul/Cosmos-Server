@@ -1,8 +1,12 @@
 ## Version 0.23.00
  - Remove Lungo, use SQLite instead
- - Remove date base sync - use message based sync
+ - Remove MongoDB use SQLite / Postgres instead 
+ - Remove date based sync - use opLog based sync
  - Fix a couple of Constellation DNS resolution issues
  - Fix quirks with inverted setups (agent is private) 
+ - Fix events not being pruned
+ - Fix events date issues
+ - Improve resilience of NATS cluster
 
 ## Version 0.22.35
  - Fix "JetStream Unavailable" once and for all (hopefully :p )

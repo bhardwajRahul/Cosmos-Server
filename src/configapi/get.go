@@ -34,12 +34,10 @@ func ConfigApiGet(w http.ResponseWriter, req *http.Request) {
 		config.HTTPConfig.TLSKey = ""
 
 		if !canReadCredentials {
-			config.MongoDB = "***"
 			config.EmailConfig.Password = "***"
 			config.EmailConfig.Username = "***"
 			config.EmailConfig.Host = "***"
-			config.Database.Password = "***"
-			config.Database.Username = "***"
+			config.Database.PostgresPassword = "***"
 			config.HTTPConfig.DNSChallengeConfig = map[string]string{}
 			config.Licence = "***"
 			config.ServerToken = "***"

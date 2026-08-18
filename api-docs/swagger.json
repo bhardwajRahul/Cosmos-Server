@@ -3567,13 +3567,13 @@
                     },
                     {
                         "type": "string",
-                        "description": "BSON query as JSON string",
+                        "description": "Filter as a JSON object",
                         "name": "query",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Pagination cursor (ObjectID hex string)",
+                        "description": "Pagination cursor (event id)",
                         "name": "page",
                         "in": "query"
                     }
@@ -3584,6 +3584,12 @@
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/utils.HTTPErrorResult"
                         }
                     },
                     "403": {
@@ -5441,7 +5447,7 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Pagination cursor (ObjectID hex string for older notifications)",
+                        "description": "Pagination cursor (notification id for older notifications)",
                         "name": "from",
                         "in": "query"
                     }
@@ -5486,7 +5492,7 @@
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Comma-separated list of notification ObjectID hex strings",
+                        "description": "Comma-separated list of notification ids",
                         "name": "ids",
                         "in": "query",
                         "required": true
@@ -9634,9 +9640,6 @@
                 "marketConfig": {
                     "$ref": "#/definitions/utils.MarketConfig"
                 },
-                "mongoDB": {
-                    "type": "string"
-                },
                 "monitoringAlerts": {
                     "type": "object",
                     "additionalProperties": {
@@ -9711,9 +9714,6 @@
                 "httpsCertificateMode": {
                     "type": "string"
                 },
-                "mongodb": {
-                    "type": "string"
-                },
                 "mongodbMode": {
                     "type": "string"
                 },
@@ -9782,9 +9782,6 @@
                 },
                 "licence": {
                     "description": "Optional: Pro licence key — stored on the lighthouse config and\nvalidated via utils.ProcessLicence at the end of setup.",
-                    "type": "string"
-                },
-                "mongodb": {
                     "type": "string"
                 },
                 "mongodbMode": {
@@ -10784,25 +10781,21 @@
         "utils.DatabaseConfig": {
             "type": "object",
             "properties": {
-                "configVolume": {
+                "nodeName": {
+                    "description": "overrides the node column on metrics rows",
                     "type": "string"
                 },
-                "dbVolume": {
+                "postgresDatabase": {
                     "type": "string"
                 },
-                "hostname": {
+                "postgresHost": {
+                    "description": "\"host\" or \"host:port\"",
                     "type": "string"
                 },
-                "password": {
+                "postgresPassword": {
                     "type": "string"
                 },
-                "puppetMode": {
-                    "type": "boolean"
-                },
-                "username": {
-                    "type": "string"
-                },
-                "version": {
+                "postgresUsername": {
                     "type": "string"
                 }
             }

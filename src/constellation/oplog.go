@@ -138,7 +138,7 @@ func oplogWriteMode() oplogMode {
 	// RestartNebula — stop() clears NebulaStarted and the device cache together
 	// (nebula.go), which makes a real cluster member look both stopped and
 	// standalone — and the apply loop's reaction to a device write is
-	// `go RestartNebula()`. Without this guard the seconds after every device write
+	// `RequestRestartNebula()`. Without this guard the seconds after every device write
 	// are a window where a second write lands locally, is never published, and is
 	// silently discarded by the next snapshot or domain op.
 	//

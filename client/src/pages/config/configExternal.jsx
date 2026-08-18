@@ -2,8 +2,6 @@ import * as React from 'react';
 import MainCard from '../../components/MainCard';
 import {
   Grid,
-  InputLabel,
-  OutlinedInput,
   Stack,
   FormHelperText,
 } from '@mui/material';
@@ -45,91 +43,54 @@ const ConfigExternal = ({ formik }) => {
         </Stack>
       </MainCard>
 
-      <MainCard title="MongoDB">
+      <MainCard title={t('mgmt.config.general.monitoringDbTitle')}>
         <Grid container spacing={3}>
           <Grid item xs={12}>
             <Stack spacing={1}>
-              <InputLabel htmlFor="MongoDB-login">{t('mgmt.config.general.mongoDbInput')}</InputLabel>
-              <OutlinedInput
-                id="MongoDB-login"
-                type="password"
-                autoComplete='new-password'
-                value={formik.values.MongoDB}
-                name="MongoDB"
-                onBlur={formik.handleBlur}
-                onChange={formik.handleChange}
-                placeholder="MongoDB"
-                fullWidth
-                error={Boolean(formik.touched.MongoDB && formik.errors.MongoDB)}
-              />
-              {formik.touched.MongoDB && formik.errors.MongoDB && (
-                <FormHelperText error id="standard-weight-helper-text-MongoDB-login">
-                  {formik.errors.MongoDB}
-                </FormHelperText>
-              )}
-              <CosmosCollapse title={t('mgmt.config.general.puppetModeTitle')}>
+              <FormHelperText>{t('mgmt.config.general.monitoringDb.introHelperText')}</FormHelperText>
+
+              <CosmosCollapse title={t('mgmt.config.general.monitoringDb.postgresTitle')}>
                 <Grid container spacing={3}>
                   <Grid item xs={12}>
-                    <CosmosCheckbox
-                      label={t('mgmt.config.general.puppetMode.enableCheckbox.enableLabel')}
-                      name="PuppetModeEnabled"
+                    <CosmosInputText
+                      label={t('mgmt.config.general.monitoringDb.hostInput.hostLabel')}
+                      name="PostgresHost"
                       formik={formik}
-                      helperText={t('mgmt.config.general.puppetMode.enableCheckbox.enableHelperText')}
+                      placeholder={'localhost:5432'}
+                    />
+                    <FormHelperText>{t('mgmt.config.general.monitoringDb.hostInput.hostHelperText')}</FormHelperText>
+                  </Grid>
+
+                  <Grid item xs={12}>
+                    <CosmosInputText
+                      label={t('mgmt.config.general.monitoringDb.databaseInput.databaseLabel')}
+                      name="PostgresDatabase"
+                      formik={formik}
+                      placeholder={'cosmos'}
                     />
 
-                    {formik.values.PuppetModeEnabled && (
-                      <Grid container spacing={3}>
-                        <Grid item xs={12}>
-                          <CosmosInputText
-                            label={t('mgmt.config.general.puppetMode.hostnameInput.hostnameLabel')}
-                            name="PuppetModeHostname"
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.hostnameInput.hostnameHelperText')}
-                          />
-                        </Grid>
+                    <CosmosInputText
+                      label={t('mgmt.config.general.monitoringDb.usernameInput.usernameLabel')}
+                      name="PostgresUsername"
+                      formik={formik}
+                    />
 
-                        <Grid item xs={12}>
-                          <CosmosInputText
-                            label={t('mgmt.config.general.puppetMode.dbVolumeInput.dbVolumeLabel')}
-                            name="PuppetModeDbVolume"
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.dbVolumeInput.dbVolumeHelperText')}
-                          />
+                    <CosmosInputPassword
+                      label={t('mgmt.config.general.monitoringDb.passwordInput.passwordLabel')}
+                      name="PostgresPassword"
+                      autoComplete='new-password'
+                      formik={formik}
+                      noStrength
+                    />
+                  </Grid>
 
-                          <CosmosInputText
-                            label={t('mgmt.config.general.puppetMode.configVolumeInput.configVolumeLabel')}
-                            name="PuppetModeConfigVolume"
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.configVolumeInput.configVolumeHelperText')}
-                          />
-
-                          <CosmosInputText
-                            label={t('mgmt.config.general.puppetMode.versionInput.versionLabel')}
-                            name="PuppetModeVersion"
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.versionInput.versionHelperText')}
-                          />
-                        </Grid>
-
-                        <Grid item xs={12}>
-                          <CosmosInputText
-                            label={t('mgmt.config.general.puppetMode.usernameInput.usernameLabel')}
-                            name="PuppetModeUsername"
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.usernameInput.usernameHelperText')}
-                          />
-
-                          <CosmosInputPassword
-                            label={t('mgmt.config.general.puppetMode.passwordInput.passwordLabel')}
-                            name="PuppetModePassword"
-                            autoComplete='new-password'
-                            formik={formik}
-                            helperText={t('mgmt.config.general.puppetMode.passwordInput.passwordHelperText')}
-                            noStrength
-                          />
-                        </Grid>
-                      </Grid>
-                    )}
+                  <Grid item xs={12}>
+                    <CosmosInputText
+                      label={t('mgmt.config.general.monitoringDb.nodeNameInput.nodeNameLabel')}
+                      name="MetricsNodeName"
+                      formik={formik}
+                    />
+                    <FormHelperText>{t('mgmt.config.general.monitoringDb.nodeNameInput.nodeNameHelperText')}</FormHelperText>
                   </Grid>
                 </Grid>
               </CosmosCollapse>

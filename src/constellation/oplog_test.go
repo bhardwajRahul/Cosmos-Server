@@ -378,7 +378,7 @@ func TestUnitOplogDomainRegistry(t *testing.T) {
 	setupTestEnv(t, nil)
 
 	for _, name := range []string{DomainAuthKeys, DomainDNS, DomainAPITokens, DomainRoles,
-		DomainOpenIDClients, DomainFileCACrt, DomainFileCAKey, DomainFileRclone} {
+		DomainOpenIDClients, DomainFileCACrt, DomainFileCAKey, DomainFileRclone, DomainDatabase} {
 		d, ok := oplogDomains[name]
 		if !ok {
 			t.Fatalf("domain %q is not registered", name)
@@ -438,6 +438,89 @@ func TestUnitOplogDomainRegistry(t *testing.T) {
 
 	if err := applyDomainLocal("no-such-domain", state); err == nil {
 		t.Fatal("unknown domain accepted")
+	}
+}
+
+// The database domain replicates the Postgres connection only; NodeName stays
+// node-local as this node's metrics identity.
+func TestUnitOplogDatabaseDomain(t *testing.T) {
+	setupTestEnv(t, nil)
+
+	// Apply reads the file, not the in-memory config
+	local := utils.ReadConfigFromFile()
+	local.Database.NodeName = "node-local"
+	utils.SetBaseMainConfig(local)
+
+	payload := DatabasePayload{
+		PostgresHost: "db.example.com:5432", PostgresDatabase: "cosmos",
+		PostgresUsername: "cosmos", PostgresPassword: "pg-secret",
+	}
+	state, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Apply directly: React would reopen the monitoring store, absent in a unit env
+	d := oplogDomains[DomainDatabase]
+	utils.ConfigLock.Lock()
+	err = d.Apply(state)
+	utils.ConfigLock.Unlock()
+	if err != nil {
+		t.Fatal("apply database domain:", err)
+	}
+
+	got := utils.GetMainConfig().Database
+	if got.PostgresHost != payload.PostgresHost || got.PostgresDatabase != payload.PostgresDatabase ||
+		got.PostgresUsername != payload.PostgresUsername || got.PostgresPassword != payload.PostgresPassword {
+		t.Fatalf("connection not applied: %+v", got)
+	}
+	if got.NodeName != "node-local" {
+		t.Fatalf("NodeName = %q, want \"node-local\" — a replicated identity puts every "+
+			"node's metrics under the same name", got.NodeName)
+	}
+
+	snap, err := d.Snapshot()
+	if err != nil {
+		t.Fatal("snapshot database:", err)
+	}
+	var back DatabasePayload
+	if err := json.Unmarshal(snap, &back); err != nil {
+		t.Fatal("unmarshal snapshot:", err)
+	}
+	if back != payload {
+		t.Fatalf("snapshot round-trip lost fields: %+v", back)
+	}
+	if strings.Contains(string(snap), "node-local") {
+		t.Fatalf("snapshot carries this node's metrics identity: %s", snap)
+	}
+}
+
+// A node that predates a domain must skip its ops, not halt — the apply loop is
+// contiguous, and halting would strand it for the rest of a rolling upgrade.
+func TestUnitOplogUnknownDomainIsSkipped(t *testing.T) {
+	setupTestEnv(t, nil)
+
+	env := OpEnvelope{
+		V: oplogEnvVersion, Epoch: utils.GetOplogEpoch(), Kind: "domain",
+		Domain: "domain-from-a-newer-node", Op: "set", Doc: json.RawMessage(`{"anything":1}`),
+		Origin: "peer", ReqID: utils.GenerateRandomString(8),
+	}
+	if err := oplogApplyEnvelope(roundTrip(t, env), 1); err != nil {
+		t.Fatalf("unknown domain halted the apply loop: %v", err)
+	}
+	if seq := utils.GetLastAppliedSeq(); seq != 1 {
+		t.Fatalf("skipped entry did not consume its seq: %d — the loop would gap on the next op", seq)
+	}
+
+	// a known domain's genuine failure stays fatal
+	bad := env
+	bad.Domain = DomainDatabase
+	bad.Doc = json.RawMessage(`"not-an-object"`)
+	if err := oplogApplyEnvelope(roundTrip(t, bad), 2); err == nil {
+		t.Fatal("a malformed payload for a known domain was swallowed")
+	}
+	if seq := utils.GetLastAppliedSeq(); seq != 1 {
+		t.Fatalf("a failed apply committed its seq anyway: %d", seq)
 	}
 }
 
@@ -1399,17 +1482,52 @@ func TestUnitOplogDeviceReactionDiff(t *testing.T) {
 		"IsRelay":      false,
 		"Tags":         []string{"new"},
 	}
-	if utils.DeviceFieldsChanged(pre, sameTopology, deviceTopologyFields) {
+	if utils.DeviceFieldsChanged(pre, sameTopology, deviceGlobalFields) {
 		t.Error("tag-only edit misread as a topology change")
 	}
 
-	if !utils.DeviceFieldsChanged(pre, map[string]interface{}{"IP": "192.168.201.6"}, deviceTopologyFields) {
+	if !utils.DeviceFieldsChanged(pre, map[string]interface{}{"IP": "192.168.201.6"}, deviceGlobalFields) {
 		t.Error("IP change not detected")
 	}
-	if !utils.DeviceFieldsChanged(pre, map[string]interface{}{"Blocked": true}, deviceTopologyFields) {
+	if !utils.DeviceFieldsChanged(pre, map[string]interface{}{"Blocked": true}, deviceGlobalFields) {
 		t.Error("block not detected")
 	}
-	if utils.DeviceFieldsChanged(pre, map[string]interface{}{"Nickname": "renamed"}, deviceTopologyFields) {
+	if utils.DeviceFieldsChanged(pre, map[string]interface{}{"Nickname": "renamed"}, deviceGlobalFields) {
 		t.Error("nickname counted as topology")
+	}
+
+	// LB toggles never restart anyone; exit-node toggles are self-only
+	if utils.DeviceFieldsChanged(pre, map[string]interface{}{"IsLoadBalancer": true}, deviceGlobalFields) {
+		t.Error("LB toggle misread as a global topology change")
+	}
+	if utils.DeviceFieldsChanged(pre, map[string]interface{}{"IsExitNode": true}, deviceGlobalFields) {
+		t.Error("exit-node toggle misread as a global topology change")
+	}
+	if !utils.DeviceFieldsChanged(pre, map[string]interface{}{"IsExitNode": true}, deviceSelfRestartFields) {
+		t.Error("exit-node change not detected as self-restart")
+	}
+}
+
+func TestUnitStaggerRank(t *testing.T) {
+	devices := []utils.ConstellationDevice{
+		{DeviceName: "charlie", CosmosNode: 2},
+		{DeviceName: "alice", CosmosNode: 1},
+		{DeviceName: "phone", CosmosNode: 0}, // nebula-only client: holds no slot
+		{DeviceName: "bob", CosmosNode: 2},
+	}
+
+	// ranks follow name order among cosmos servers only
+	for name, want := range map[string]int{"alice": 0, "bob": 1, "charlie": 2} {
+		if got := staggerRank(name, devices); got != want {
+			t.Errorf("staggerRank(%s) = %d, want %d", name, got, want)
+		}
+	}
+
+	// a node absent from the table restarts soonest
+	if got := staggerRank("deleted-node", devices); got != 0 {
+		t.Errorf("staggerRank(deleted-node) = %d, want 0", got)
+	}
+	if got := staggerRank("phone", devices); got != 0 {
+		t.Errorf("staggerRank(phone) = %d, want 0", got)
 	}
 }
