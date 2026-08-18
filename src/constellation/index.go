@@ -174,6 +174,9 @@ func Init() {
 	// every user/device write in the product goes through here from now on
 	utils.SetPublishOpHook(publishOp)
 	utils.GetConstellationTunnelRoutes = getConstellationTunnelRoutes
+	utils.PublishRolesOp = func(roles map[utils.Role]utils.RoleConfig) error {
+		return PublishDomainOp(DomainRoles, roles)
+	}
 
 	NebulaStarted.Store(false)
 	NATSStarted.Store(false)

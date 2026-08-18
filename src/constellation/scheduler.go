@@ -43,7 +43,7 @@ func StopSchedulerInConstellation() {
 // returned exactly as stored (sanitized via sanitizeNATSUsername); callers
 // match it client-side rather than reversing the sanitization.
 func GetCurrentLeaderName() string {
-	name, ok := pro.GetLeaderName(&clientConfigLock, js)
+	name, ok := pro.GetLeaderName(&clientConfigLock, nc, js)
 	if !ok {
 		return ""
 	}

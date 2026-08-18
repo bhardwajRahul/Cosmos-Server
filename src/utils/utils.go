@@ -87,6 +87,13 @@ var InitPremiumFeatures func()
 
 var GetConstellationTunnelRoutes = func() []ProxyRouteConfig { return []ProxyRouteConfig{} }
 
+// PublishRolesOp publishes the roles config domain through the constellation
+// op-log. Wired in constellation/index.go: the pro package can't call
+// constellation.PublishDomainOp directly because constellation imports pro.
+var PublishRolesOp = func(roles map[Role]RoleConfig) error {
+	return errors.New("constellation op-log not initialised")
+}
+
 var LetsEncryptErrors = []string{}
 
 var CONFIGFOLDER = "/var/lib/cosmos/"
