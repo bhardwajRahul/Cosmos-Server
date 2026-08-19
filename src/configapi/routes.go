@@ -8,6 +8,15 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// validateRoute returns an error message when the route is invalid, "" otherwise.
+func validateRoute(route utils.ProxyRouteConfig) string {
+	if !utils.IsValidLBMode(route.LBMode) {
+		return "Unsupported load balancing mode \"" + route.LBMode + "\" on route \"" + route.Name +
+			"\". Supported modes are \"round_robin\" and \"first\" (an empty value means \"first\": always send traffic to the first/local target)"
+	}
+	return ""
+}
+
 func RoutesRoute(w http.ResponseWriter, req *http.Request) {
 	if req.Method == "GET" {
 		listRoutes(w, req)
@@ -125,6 +134,12 @@ func createRoute(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if msg := validateRoute(newRoute); msg != "" {
+		utils.Error("CreateRoute: "+msg, nil)
+		utils.HTTPError(w, msg, http.StatusBadRequest, "RT009")
+		return
+	}
+
 	utils.ConfigLock.Lock()
 	defer utils.ConfigLock.Unlock()
 
@@ -212,6 +227,12 @@ func updateRoute(w http.ResponseWriter, req *http.Request) {
 
 	if !updatedRoute.UseHost && !updatedRoute.UsePathPrefix {
 		utils.HTTPError(w, "Route must have at least one of UseHost or UsePathPrefix enabled, otherwise it will catch all requests", http.StatusBadRequest, "RT008")
+		return
+	}
+
+	if msg := validateRoute(updatedRoute); msg != "" {
+		utils.Error("UpdateRoute: "+msg, nil)
+		utils.HTTPError(w, msg, http.StatusBadRequest, "RT009")
 		return
 	}
 

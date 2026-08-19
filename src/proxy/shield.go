@@ -298,18 +298,19 @@ func GetClientID(r *http.Request, route utils.ProxyRouteConfig) string {
 	// when using Docker we need to get the real IP
 	remoteAddr, _ := utils.SplitIP(r.RemoteAddr)
 	isConstIP := constellation.IsConstellationIP(remoteAddr)
-	isConstTokenValid := constellation.CheckConstellationToken(r) == nil
+	isConstTokenValid := isConstIP && constellation.CheckConstellationToken(r) == nil
 
-	if (utils.IsTrustedProxy(remoteAddr) && r.Header.Get("x-forwarded-for") != "") ||
-		(isConstIP && isConstTokenValid) {
-		ip, _ := utils.SplitIP(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]))
-		utils.Debug("SmartShield: Getting forwarded client ID " + ip)
-		return ip
-	} else {
-		ip, _ := utils.SplitIP(r.RemoteAddr)
-		utils.Debug("SmartShield: Getting client ID " + ip)
-		return ip
+	if utils.IsTrustedProxy(remoteAddr) || isConstTokenValid {
+		if ip, _ := utils.SplitIP(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])); ip != "" {
+			utils.Debug("SmartShield: Getting forwarded client ID " + ip)
+			return ip
+		}
 	}
+
+	// no usable forwarded address: fall back to the peer IP
+	ip, _ := utils.SplitIP(r.RemoteAddr)
+	utils.Debug("SmartShield: Getting client ID " + ip)
+	return ip
 }
 
 func isPrivileged(req *http.Request, policy utils.SmartShieldPolicy) bool {

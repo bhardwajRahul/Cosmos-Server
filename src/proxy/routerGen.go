@@ -53,7 +53,12 @@ func tokenMiddleware(route utils.ProxyRouteConfig) func(next http.Handler) http.
 			r.Header.Del("x-cosmos-role")
 			r.Header.Del("x-cosmos-user-role")
 			r.Header.Del("x-cosmos-mfa")
-			r.Header.Del("x-cstln-auth")
+
+			// only a constellation peer may present a node token, and only its own (the key is bound to the source IP)
+			remoteAddr, _ := utils.SplitIP(r.RemoteAddr)
+			if !constellation.IsConstellationIP(remoteAddr) {
+				r.Header.Del("x-cstln-auth")
+			}
 
 			permissions, isSudoed, u, err := user.RefreshUserToken(w, r)
 
@@ -107,21 +112,6 @@ func tokenMiddleware(route utils.ProxyRouteConfig) func(next http.Handler) http.
 	}
 }
 
-func AddConstellationToken(route utils.ProxyRouteConfig) func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// If the request is from a Constellation tunnel, add the token
-			apiKey, _ := constellation.GetCurrentDeviceAPIKey()
-			if constellation.IsTunneled(route) {
-				// Add the token
-				r.Header.Set("x-cstln-auth", apiKey)
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
 func RouterGen(route utils.ProxyRouteConfig, router *mux.Router, destination http.Handler) *mux.Route {
 	origin := router.NewRoute()
 
@@ -163,8 +153,6 @@ func RouterGen(route utils.ProxyRouteConfig, router *mux.Router, destination htt
 		}
 		destination = http.StripPrefix(route.PathPrefix, destination)
 	}
-
-	destination = AddConstellationToken(route)(destination)
 
 	for filter := range route.AddionalFilters {
 		if route.AddionalFilters[filter].Type == "header" {

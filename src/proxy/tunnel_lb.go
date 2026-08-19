@@ -53,7 +53,11 @@ func (lb *TunnelLoadBalancer) Select(keys []string, routeName string, mode strin
 		c := lb.getCounter(routeName)
 		idx := c.val.Add(1) - 1
 		selected = keys[idx%uint64(len(keys))]
-	default: // "first" or ""
+	case "", "first":
+		selected = keys[0]
+	default:
+		// only reachable via a hand-edited config file, the API rejects unknown modes
+		utils.Warn("TunnelLoadBalancer: unknown lb_mode \"" + mode + "\" on route " + routeName + ", load balancing is off (always using the first target)")
 		selected = keys[0]
 	}
 

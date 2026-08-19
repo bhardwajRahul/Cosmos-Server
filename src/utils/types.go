@@ -2,6 +2,7 @@ package utils
 
 import (
 	"os"
+	"strings"
 	"time"
 )
 
@@ -366,6 +367,19 @@ type ProxyRouteConfig struct {
 	LBStickyMode               bool                        `yaml:"lb_sticky_mode" json:"LBStickyMode,omitempty"`
 	AdditionalTargets          []string                    `yaml:"additional_targets,omitempty" json:"AdditionalTargets,omitempty"`
 	Const_IsTunneled           bool                        `yaml:"-" json:"-"`
+}
+
+// LBModes are the load balancing modes implemented by TunnelLoadBalancer.Select().
+var LBModes = []string{"", "first", "round_robin"}
+
+// IsValidLBMode reports whether mode is one of LBModes, case-insensitively.
+func IsValidLBMode(mode string) bool {
+	for _, m := range LBModes {
+		if strings.EqualFold(mode, m) {
+			return true
+		}
+	}
+	return false
 }
 
 type EmailConfig struct {

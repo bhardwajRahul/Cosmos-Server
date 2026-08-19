@@ -46,6 +46,14 @@ func ConfigApiPatch(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if updateReq.NewRoute != nil {
+		if msg := validateRoute(*updateReq.NewRoute); msg != "" {
+			utils.Error("RouteSettingsUpdate: "+msg, nil)
+			utils.HTTPError(w, msg, http.StatusBadRequest, "UR005")
+			return
+		}
+	}
+
 	config := utils.ReadConfigFromFile()
 	routes := config.HTTPConfig.ProxyConfig.Routes
 	routeIndex := -1

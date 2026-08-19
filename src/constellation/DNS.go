@@ -3,6 +3,7 @@ package constellation
 import (
 	"context"
 	"time"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,82 @@ func answerA(m *dns.Msg, name string, ip string) {
 	}
 
 	m.Answer = append(m.Answer, rr)
+}
+
+func hostOnly(host string) string {
+	return strings.Split(host, ":")[0]
+}
+
+// tunneledHostnames lists hostnames this node only serves as a tunnel backend
+// (nil on a load balancer, which answers for itself).
+func tunneledHostnames() map[string]bool {
+	if isLB, err := GetCurrentDeviceIsLoadbalancer(); err != nil || isLB {
+		return nil
+	}
+
+	config := utils.GetMainConfig()
+	tunneled := map[string]bool{}
+	local := map[string]bool{
+		hostOnly(config.HTTPConfig.Hostname): true,
+	}
+
+	usable := func(host string) bool {
+		return host != "" && !strings.Contains(host, ",") && !strings.Contains(host, " ")
+	}
+
+	for _, route := range config.HTTPConfig.ProxyConfig.Routes {
+		if !route.UseHost || !usable(route.Host) {
+			continue
+		}
+		if route.Tunnel == "" {
+			local[hostOnly(route.Host)] = true
+			continue
+		}
+		tunneled[hostOnly(route.Host)] = true
+		// GetAllTunneledRoutes publishes TunneledHost as the public Host
+		if usable(route.TunneledHost) {
+			tunneled[hostOnly(route.TunneledHost)] = true
+		}
+	}
+
+	for host := range local {
+		delete(tunneled, host)
+	}
+
+	return tunneled
+}
+
+// loadBalancerIPs returns the constellation IPs of the known load balancers,
+// deduplicated and sorted so the answer is stable across queries.
+func loadBalancerIPs() []string {
+	devices, _ := deviceCacheSnapshot()
+
+	seen := map[string]bool{}
+	ips := []string{}
+	for _, device := range devices {
+		ip := cleanIp(device.IP)
+		if !device.IsLoadBalancer || ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		ips = append(ips, ip)
+	}
+
+	sort.Strings(ips)
+	return ips
+}
+
+// dnsAnswerIPs picks what to answer hostname with. A tunneled hostname on a
+// non-load-balancer node must point at the load balancers, which hold the
+// tunnel cache and provide rotation/failover. Falls back to this node.
+func dnsAnswerIPs(hostname string, thisIp string, tunneled map[string]bool) []string {
+	if !tunneled[hostname] {
+		return []string{thisIp}
+	}
+	if ips := loadBalancerIPs(); len(ips) > 0 {
+		return ips
+	}
+	return []string{thisIp}
 }
 
 // isBlacklisted reports whether domain or any of its parent domains is in DNSBlacklist,
@@ -130,17 +207,31 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		if err != nil {
 			utils.Error("[constellation] Failed to get current device IP for DNS handling", err)
 		} else {
+			tunneled := tunneledHostnames()
 			for _, q := range r.Question {
 				utils.Debug("DNS Question " + q.Name)
+				if !isAddrQuery(q) {
+					continue
+				}
+
+				// most specific match wins
+				best := ""
 				for _, hostname := range hostnames {
-					if matchesDomain(q.Name, hostname) && isAddrQuery(q) {
-						if q.Qtype == dns.TypeA {
-							utils.Debug("DNS Overwrite " + hostname + " with " + thisIp)
-							answerA(m, q.Name, thisIp)
-						}
-						customHandled = true
+					if matchesDomain(q.Name, hostname) && len(hostname) > len(best) {
+						best = hostname
 					}
 				}
+				if best == "" {
+					continue
+				}
+
+				if q.Qtype == dns.TypeA {
+					for _, ip := range dnsAnswerIPs(best, thisIp, tunneled) {
+						utils.Debug("DNS Overwrite " + best + " with " + ip)
+						answerA(m, q.Name, ip)
+					}
+				}
+				customHandled = true
 			}
 		}
 	}

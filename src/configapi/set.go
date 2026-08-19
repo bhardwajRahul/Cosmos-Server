@@ -96,6 +96,15 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 			return 
 		}
 
+		// this PUT writes routes wholesale: validate before any write, including the op-log publish
+		for _, route := range request.HTTPConfig.ProxyConfig.Routes {
+			if msg := validateRoute(route); msg != "" {
+				utils.Error("SettingsUpdate: "+msg, nil)
+				utils.HTTPError(w, msg, http.StatusBadRequest, "UC005")
+				return
+			}
+		}
+
 		// restore fields that are never sent to the client or are masked with ***
 		config := utils.ReadConfigFromFile()
 		request.HTTPConfig.AuthPrivateKey = config.HTTPConfig.AuthPrivateKey

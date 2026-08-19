@@ -97,6 +97,11 @@ func GetAllTunneledRoutes() []utils.ProxyRouteConfig {
 
 	for _, route := range routesList {
 		if route.Tunnel != "" {
+			// checked against the original target: route.Target is rewritten below
+			if !isTunnelBackendHealthy(route) {
+				continue
+			}
+
 			protocol := ""
 			port := configHostport
 
@@ -155,6 +160,8 @@ func StopHeartbeat() {
 	// of leader role) but we stop it here because the heartbeat loop is its
 	// only consumer in production.
 	pro.StopResourceSampler()
+
+	StopTunnelProber()
 
 	heartbeatLock.Lock()
 	defer heartbeatLock.Unlock()
@@ -263,6 +270,9 @@ func ClientHeartbeatInit() {
 	// leader election in constellation-nodes. Must be started after
 	// pro.ClientHeartbeatInit so the deployments KV exists.
 	StartSchedulerInConstellation()
+
+	// advertise a tunneled route only while its local backend answers
+	StartTunnelProber()
 
 	UpdateLocalTunnelCache()
 
@@ -572,6 +582,62 @@ var heartbeatStopChan chan struct{}
 var heartbeatTicker *time.Ticker
 var heartbeatLock sync.Mutex
 
+// mergeTunnelHeartbeats collapses every advertiser's tunnel routes into one
+// entry per route name. The governing Route config is the one advertised by the
+// lowest sanitized device name (same tiebreak as designatedKVCreator): picking
+// the first seen made the effective config flap with KV iteration order.
+func mergeTunnelHeartbeats(heartbeats []NodeHeartbeat, currentDeviceName string) []utils.ConstellationTunnel {
+	byName := map[string]*utils.ConstellationTunnel{}
+	governing := map[string]string{}
+
+	for _, heartbeat := range heartbeats {
+		advertiser := sanitizeNATSUsername(heartbeat.DeviceName)
+
+		for _, tunnelRoute := range heartbeat.Tunnels {
+			if tunnelRoute.Tunnel != "_ANY_" && tunnelRoute.Tunnel != currentDeviceName {
+				continue
+			}
+
+			target := utils.TunnelTarget{
+				DeviceName: heartbeat.DeviceName,
+				TargetURL:  tunnelRoute.Target,
+			}
+			tunnelRoute.Const_IsTunneled = true
+
+			existing, ok := byName[tunnelRoute.Name]
+			if !ok {
+				byName[tunnelRoute.Name] = &utils.ConstellationTunnel{
+					Route:   tunnelRoute,
+					Targets: []utils.TunnelTarget{target},
+				}
+				governing[tunnelRoute.Name] = advertiser
+				continue
+			}
+
+			existing.Targets = append(existing.Targets, target)
+			// an unnamed advertiser never governs, and never blocks a named one
+			if advertiser != "" && (governing[tunnelRoute.Name] == "" || advertiser < governing[tunnelRoute.Name]) {
+				existing.Route = tunnelRoute
+				governing[tunnelRoute.Name] = advertiser
+			}
+		}
+	}
+
+	tunnels := make([]utils.ConstellationTunnel, 0, len(byName))
+	for _, t := range byName {
+		// Ensure local node is always first in targets
+		for i, target := range t.Targets {
+			if target.DeviceName == currentDeviceName && i != 0 {
+				t.Targets[0], t.Targets[i] = t.Targets[i], t.Targets[0]
+				break
+			}
+		}
+		tunnels = append(tunnels, *t)
+	}
+
+	return tunnels
+}
+
 func UpdateLocalTunnelCache() {
 	if IsConstellationStandalone() {
 		return
@@ -614,7 +680,7 @@ func UpdateLocalTunnelCache() {
 		return
 	}
 
-	byName := map[string]*utils.ConstellationTunnel{}
+	heartbeats := make([]NodeHeartbeat, 0, len(keys))
 
 	for _, key := range keys {
 		entry, err := kv.Get(key)
@@ -630,37 +696,11 @@ func UpdateLocalTunnelCache() {
 			continue
 		}
 
-		for _, tunnelRoute := range heartbeat.Tunnels {
-			if tunnelRoute.Tunnel == "_ANY_" || tunnelRoute.Tunnel == currentDeviceName {
-				target := utils.TunnelTarget{
-					DeviceName: heartbeat.DeviceName,
-					TargetURL:  tunnelRoute.Target,
-				}
-				if existing, ok := byName[tunnelRoute.Name]; ok {
-					existing.Targets = append(existing.Targets, target)
-				} else {
-					tunnelRoute.Const_IsTunneled = true
-					byName[tunnelRoute.Name] = &utils.ConstellationTunnel{
-						Route:   tunnelRoute,
-						Targets: []utils.TunnelTarget{target},
-					}
-				}
-			}
-		}
+		heartbeats = append(heartbeats, heartbeat)
 	}
 	clientConfigLock.RUnlock() // Done with KV operations
 
-	tunnels := make([]utils.ConstellationTunnel, 0, len(byName))
-	for _, t := range byName {
-		// Ensure local node is always first in targets
-		for i, target := range t.Targets {
-			if target.DeviceName == currentDeviceName && i != 0 {
-				t.Targets[0], t.Targets[i] = t.Targets[i], t.Targets[0]
-				break
-			}
-		}
-		tunnels = append(tunnels, *t)
-	}
+	tunnels := mergeTunnelHeartbeats(heartbeats, currentDeviceName)
 
 	// Compare old and new cache using sorted copies for consistent comparison
 	sortTunnelsForComparison := func(t []utils.ConstellationTunnel) []utils.ConstellationTunnel {

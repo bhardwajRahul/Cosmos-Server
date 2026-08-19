@@ -114,6 +114,9 @@ func NewProxy(targetHost string, AcceptInsecureHTTPSTarget bool, DisableHeaderHa
 	}
 
 	proxy.Director = func(req *http.Request) {
+		// never leak a node API key to a backend; the tunnel director re-adds it for constellation hops
+		req.Header.Del("x-cstln-auth")
+
 		originalScheme := "http"
 		if utils.IsHTTPS {
 			originalScheme = "https"
@@ -263,6 +266,9 @@ func NewProxy(targetHost string, AcceptInsecureHTTPSTarget bool, DisableHeaderHa
 }
 
 
+// TunnelLBForwardedHeader marks a request already load-balanced by an upstream constellation node.
+const TunnelLBForwardedHeader = "x-cstln-lb-forwarded"
+
 func TunnelRouteTo(tunnel utils.ConstellationTunnel, lb *TunnelLoadBalancer) http.Handler {
 	type targetProxy struct {
 		target  utils.TunnelTarget
@@ -276,12 +282,14 @@ func TunnelRouteTo(tunnel utils.ConstellationTunnel, lb *TunnelLoadBalancer) htt
 	}
 
 	proxies := make([]targetProxy, 0, len(tunnel.Targets))
+	var selfHandler http.Handler
 	for _, t := range tunnel.Targets {
 		if t.DeviceName == currentDeviceName {
 			// Find the original config route and use RouteTo directly
 			for _, cfgRoute := range utils.GetMainConfig().HTTPConfig.ProxyConfig.Routes {
 				if cfgRoute.Name == tunnel.Route.Name {
-					proxies = append(proxies, targetProxy{t, RouteTo(cfgRoute)})
+					selfHandler = RouteTo(cfgRoute)
+					proxies = append(proxies, targetProxy{t, selfHandler})
 					break
 				}
 			}
@@ -293,11 +301,34 @@ func TunnelRouteTo(tunnel utils.ConstellationTunnel, lb *TunnelLoadBalancer) htt
 				utils.Error("Create Tunnel Route for "+t.DeviceName, err)
 				continue
 			}
+			// mark the request so the receiving node serves it locally instead of re-balancing
+			director := proxy.Director
+			proxy.Director = func(req *http.Request) {
+				director(req)
+				req.Header.Set(TunnelLBForwardedHeader, "1")
+				if apiKey, err := constellation.GetCurrentDeviceAPIKey(); err == nil && apiKey != "" {
+					req.Header.Set("x-cstln-auth", apiKey)
+				}
+			}
 			proxies = append(proxies, targetProxy{t, proxy})
 		}
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(TunnelLBForwardedHeader) != "" {
+			r.Header.Del(TunnelLBForwardedHeader)
+			// only trust the marker from another constellation node
+			remoteAddr, _ := utils.SplitIP(r.RemoteAddr)
+			if constellation.IsConstellationIP(remoteAddr) {
+				if selfHandler == nil {
+					http.Error(w, "No local tunnel target available", http.StatusBadGateway)
+					return
+				}
+				selfHandler.ServeHTTP(w, r)
+				return
+			}
+		}
+
 		if len(proxies) == 0 {
 			http.Error(w, "No tunnel targets available", http.StatusBadGateway)
 			return

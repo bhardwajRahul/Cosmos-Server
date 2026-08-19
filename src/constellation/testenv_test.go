@@ -77,6 +77,10 @@ func resetConstellationGlobals() {
 	opWaiters = map[string]chan error{}
 	opWaitersMu.Unlock()
 
+	tunnelHealthMux.Lock()
+	tunnelHealth = map[string]tunnelProbeState{}
+	tunnelHealthMux.Unlock()
+
 	dnsMux.Lock()
 	DNSStarted = false
 	dnsServer = nil
