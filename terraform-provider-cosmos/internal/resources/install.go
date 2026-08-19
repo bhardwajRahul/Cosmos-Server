@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,8 +33,12 @@ type installResource struct {
 
 type installModel struct {
 	// Database
-	MongoDBMode types.String `tfsdk:"mongodb_mode"`
-	MongoDB     types.String `tfsdk:"mongodb"`
+	MongoDBMode      types.String `tfsdk:"mongodb_mode"`
+	PostgresHost     types.String `tfsdk:"postgres_host"`
+	PostgresDatabase types.String `tfsdk:"postgres_database"`
+	PostgresUsername types.String `tfsdk:"postgres_username"`
+	PostgresPassword types.String `tfsdk:"postgres_password"`
+	DatabaseNodeName types.String `tfsdk:"database_node_name"`
 
 	// HTTPS
 	Hostname               types.String `tfsdk:"hostname"`
@@ -72,14 +77,34 @@ func (r *installResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		Description: "Bootstraps a fresh Cosmos server via /api/setup. Calls the unauthenticated install endpoint with database, HTTPS, and admin credentials, then captures a freshly-issued admin API token (admin_token) for use by downstream resources via a chained provider alias. All input fields require resource replacement; the resource is one-shot.",
 		Attributes: map[string]schema.Attribute{
 			"mongodb_mode": schema.StringAttribute{
-				Description:   "Database mode: \"Create\" (provision MongoDB container), \"Provided\" (use external mongodb URI), or \"DisableUserManagement\" (no DB).",
+				Description:   "User-management mode. Cosmos stores everything in its local SQL store now, so the only value that changes behaviour is \"DisableUserManagement\" (no user management); legacy MongoDB values such as \"Create\" and \"Provided\" are still accepted and ignored by /api/setup.",
 				Required:      true,
 				PlanModifiers: allReplace,
 			},
-			"mongodb": schema.StringAttribute{
-				Description:   "MongoDB connection string. Required when mongodb_mode = \"Provided\".",
+			"postgres_host": schema.StringAttribute{
+				Description:   "Shared Postgres host, as \"host\" or \"host:port\". Leave unset to use the node's local SQL store. When set, postgres_database, postgres_username and postgres_password are all required — /api/setup rejects a partial connection rather than silently falling back to local storage.",
+				Optional:      true,
+				PlanModifiers: allReplace,
+			},
+			"postgres_database": schema.StringAttribute{
+				Description:   "Postgres database name. Required when postgres_host is set.",
+				Optional:      true,
+				PlanModifiers: allReplace,
+			},
+			"postgres_username": schema.StringAttribute{
+				Description:   "Postgres username. Required when postgres_host is set.",
+				Optional:      true,
+				PlanModifiers: allReplace,
+			},
+			"postgres_password": schema.StringAttribute{
+				Description:   "Postgres password. Required when postgres_host is set.",
 				Optional:      true,
 				Sensitive:     true,
+				PlanModifiers: allReplace,
+			},
+			"database_node_name": schema.StringAttribute{
+				Description:   "Overrides the node column written on this server's metrics rows. Defaults to the hostname. Only meaningful when several nodes share one Postgres.",
+				Optional:      true,
 				PlanModifiers: allReplace,
 			},
 			"hostname": schema.StringAttribute{
@@ -201,10 +226,41 @@ func (r *installResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// Mirror the server's all-or-nothing rule locally so the failure shows up
+	// at plan/apply time with a field name attached, rather than as an opaque
+	// SU003 from a half-provisioned node.
+	pgFields := map[string]types.String{
+		"postgres_host":     plan.PostgresHost,
+		"postgres_database": plan.PostgresDatabase,
+		"postgres_username": plan.PostgresUsername,
+		"postgres_password": plan.PostgresPassword,
+	}
+	pgSet, pgMissing := 0, []string{}
+	for name, v := range pgFields {
+		if !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
+			pgSet++
+		} else {
+			pgMissing = append(pgMissing, name)
+		}
+	}
+	if pgSet > 0 && pgSet < len(pgFields) {
+		sort.Strings(pgMissing)
+		resp.Diagnostics.AddError(
+			"Incomplete Postgres connection",
+			"postgres_host, postgres_database, postgres_username and postgres_password must all be set together. Missing: "+
+				strings.Join(pgMissing, ", ")+".",
+		)
+		return
+	}
+
 	createAdminToken := true
 	body := cosmossdk.MainSetupJSON{
 		MongodbMode:      stringPtrIfSet(plan.MongoDBMode),
-		Mongodb:          stringPtrIfSet(plan.MongoDB),
+		PostgresHost:     stringPtrIfSet(plan.PostgresHost),
+		PostgresDatabase: stringPtrIfSet(plan.PostgresDatabase),
+		PostgresUsername: stringPtrIfSet(plan.PostgresUsername),
+		PostgresPassword: stringPtrIfSet(plan.PostgresPassword),
+		DatabaseNodeName: stringPtrIfSet(plan.DatabaseNodeName),
 		Hostname:         stringPtrIfSet(plan.Hostname),
 		Nickname:         stringPtrIfSet(plan.Nickname),
 		Password:         stringPtrIfSet(plan.Password),
@@ -399,4 +455,3 @@ func stringPtrIfSet(v types.String) *string {
 	}
 	return &s
 }
-

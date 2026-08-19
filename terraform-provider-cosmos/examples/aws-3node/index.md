@@ -6,7 +6,7 @@ Provisions three EC2 instances and bootstraps them as an equal-footing Cosmos cl
 
 1. Creates an EC2 security group (22, 80, 443 tcp, 4242 udp) and 3 `aws_instance.node` (Ubuntu).
 2. `cosmos_remote_install` runs `get-pro.sh` on each instance.
-3. Bootstraps node 0 via `cosmos_install` (the "founder") — Let's Encrypt + Create-mode MongoDB.
+3. Bootstraps node 0 via `cosmos_install` (the "founder") — Let's Encrypt, local SQL store.
 4. Creates the constellation on node 0 (`cosmos_constellation`).
 5. Mints two device join blobs with `cosmos_constellation_device`, **`cosmos_node = 2`** (full server peers, not agents).
 6. Bootstraps node 1 and node 2 via `cosmos_install` with `constellation_config`.

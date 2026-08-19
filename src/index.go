@@ -206,7 +206,7 @@ func main() {
 }
 
 // @title Cosmos Server API
-// @version 0.23.0-unstable002
+// @version 0.23.0-unstable003
 // @description REST API for Cosmos Cloud server management
 // @BasePath /cosmos
 // @securityDefinitions.apikey BearerAuth
@@ -228,13 +228,6 @@ func cosmos() {
 		cron.InitScheduler()
 	}
 
-	// Scheduler template providers. Wired here rather than from the
-	// constellation or storage packages because storage → constellation
-	// already exists (rclone_api.go) so a constellation → storage edge
-	// would be a cycle. Both closures are safe to call at any time —
-	// GetCurrentDevice returns an error before constellation is up, and
-	// CachedRemoteStorageList is just an empty slice before the first
-	// rclone init.
 	pro.SetMountedStorageProvider(func() []string {
 		names := make([]string, 0, len(storage.CachedRemoteStorageList))
 		for _, s := range storage.CachedRemoteStorageList {

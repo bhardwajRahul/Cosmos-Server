@@ -1,6 +1,8 @@
 package constellation
 
 import (
+	"strconv"
+
 	"github.com/azukaar/cosmos-server/src/pro"
 	"github.com/azukaar/cosmos-server/src/utils"
 )
@@ -22,11 +24,18 @@ func StartSchedulerInConstellation() {
 	}
 	self := sanitizeNATSUsername(device.DeviceName)
 
+	followerOnly := device.CosmosNode != 2
+	if followerOnly {
+		utils.Log("[SCHED] node is not a manager (CosmosNode=" + strconv.Itoa(device.CosmosNode) + ") — scheduler starts leader-ineligible")
+	}
+
 	// Registry of placement strategies selectable per-Deployment via
 	// Deployment.Strategy. DefaultStrategies() ships round-robin (default)
 	// and least-busy; least-busy falls back to round-robin when monitoring
 	// is unavailable.
-	pro.StartScheduler(&clientConfigLock, js, nc, self, pro.DefaultStrategies())
+	pro.StartSchedulerWithOptions(&clientConfigLock, js, nc, self, pro.DefaultStrategies(), pro.SchedulerOptions{
+		FollowerOnly: followerOnly,
+	})
 }
 
 // StopSchedulerInConstellation halts the scheduler. Called from StopHeartbeat

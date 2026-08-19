@@ -182,6 +182,15 @@ type SetupJSON struct {
 	// Database
 	MongoDBMode string `json:"mongodbMode"`
 
+	// Optional: point this node at a shared Postgres instead of the local SQL store
+	PostgresHost     string `json:"postgresHost,omitempty"`
+	PostgresDatabase string `json:"postgresDatabase,omitempty"`
+	PostgresUsername string `json:"postgresUsername,omitempty"`
+	PostgresPassword string `json:"postgresPassword,omitempty"`
+
+	// Optional: overrides the node column on metrics rows. Defaults to the hostname when empty, which is what a single-node install wants.
+	DatabaseNodeName string `json:"databaseNodeName,omitempty"`
+
 	// HTTPS
 	Hostname               string            `json:"hostname"`
 	HTTPSCertificateMode   string            `json:"httpsCertificateMode"`
@@ -265,6 +274,33 @@ func SetupRoute(w http.ResponseWriter, req *http.Request) {
 		config.DisableUserManagement = true
 	} else {
 		config.DisableUserManagement = false
+	}
+
+	// Optional shared Postgres
+	pgSet := 0
+	for _, v := range []string{
+		request.PostgresHost, request.PostgresDatabase,
+		request.PostgresUsername, request.PostgresPassword,
+	} {
+		if v != "" {
+			pgSet++
+		}
+	}
+	if pgSet > 0 && pgSet < 4 {
+		utils.Error("Setup: incomplete Postgres connection", nil)
+		utils.HTTPError(w, "postgresHost, postgresDatabase, postgresUsername and postgresPassword must all be provided together",
+			http.StatusBadRequest, "SU003")
+		return
+	}
+	if pgSet == 4 {
+		utils.Log("Setup: Using Postgres at " + request.PostgresHost)
+		config.Database.PostgresHost = request.PostgresHost
+		config.Database.PostgresDatabase = request.PostgresDatabase
+		config.Database.PostgresUsername = request.PostgresUsername
+		config.Database.PostgresPassword = request.PostgresPassword
+	}
+	if request.DatabaseNodeName != "" {
+		config.Database.NodeName = request.DatabaseNodeName
 	}
 
 	utils.SaveConfigTofile(config)

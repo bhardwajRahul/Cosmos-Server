@@ -200,6 +200,10 @@ func DeviceCreate(request DeviceCreateRequestJSON) (string, string, string, Devi
 	deviceName := utils.Sanitize(request.DeviceName)
 	APIKey := utils.GenerateRandomString(32)
 
+	if request.Port == "" {
+		request.Port = "4242"
+	}
+
 	utils.Log("ConstellationDeviceCreation: Creating Device " + deviceName)
 
 	utils.Debug("ConstellationDeviceCreation: Creating Device " + deviceName)

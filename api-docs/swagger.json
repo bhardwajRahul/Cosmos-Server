@@ -4,7 +4,7 @@
         "description": "REST API for Cosmos Cloud server management",
         "title": "Cosmos Server API",
         "contact": {},
-        "version": "0.23.0-unstable002"
+        "version": "0.23.0-unstable003"
     },
     "basePath": "/cosmos",
     "paths": {
@@ -9767,6 +9767,10 @@
                     "description": "Optional: create admin API token",
                     "type": "boolean"
                 },
+                "databaseNodeName": {
+                    "description": "Optional: overrides the node column on metrics rows. Defaults to the hostname when empty, which is what a single-node install wants.",
+                    "type": "string"
+                },
                 "dnsChallengeProvider": {
                     "type": "string"
                 },
@@ -9793,6 +9797,19 @@
                     "type": "string"
                 },
                 "password": {
+                    "type": "string"
+                },
+                "postgresDatabase": {
+                    "type": "string"
+                },
+                "postgresHost": {
+                    "description": "Optional: point this node at a shared Postgres instead of the local SQL store",
+                    "type": "string"
+                },
+                "postgresPassword": {
+                    "type": "string"
+                },
+                "postgresUsername": {
                     "type": "string"
                 },
                 "sslEmail": {
