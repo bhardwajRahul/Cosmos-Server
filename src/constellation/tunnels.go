@@ -599,8 +599,11 @@ func mergeTunnelHeartbeats(heartbeats []NodeHeartbeat, currentDeviceName string)
 			}
 
 			target := utils.TunnelTarget{
-				DeviceName: heartbeat.DeviceName,
-				TargetURL:  tunnelRoute.Target,
+				DeviceName:   heartbeat.DeviceName,
+				TargetURL:    tunnelRoute.Target,
+				CPUPercent:   heartbeat.CPUPercent,
+				RAMPercent:   heartbeat.RAMPercent,
+				MonitoringOn: heartbeat.MonitoringOn,
 			}
 			tunnelRoute.Const_IsTunneled = true
 

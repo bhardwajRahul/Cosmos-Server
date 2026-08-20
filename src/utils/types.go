@@ -370,7 +370,7 @@ type ProxyRouteConfig struct {
 }
 
 // LBModes are the load balancing modes implemented by TunnelLoadBalancer.Select().
-var LBModes = []string{"", "first", "round_robin"}
+var LBModes = []string{"", "first", "round_robin", "load_based"}
 
 // IsValidLBMode reports whether mode is one of LBModes, case-insensitively.
 func IsValidLBMode(mode string) bool {
@@ -431,6 +431,11 @@ type ConstellationConfig struct {
 type TunnelTarget struct {
 	DeviceName string `json:"deviceName"`
 	TargetURL  string `json:"targetURL"`
+	// Latest resource sample from the advertiser's heartbeat, used by the
+	// "load_based" LB mode. Only trustworthy when MonitoringOn is true.
+	CPUPercent   float64 `json:"cpuPercent,omitempty"`
+	RAMPercent   float64 `json:"ramPercent,omitempty"`
+	MonitoringOn bool    `json:"monitoringOn,omitempty"`
 }
 
 type ConstellationTunnel struct {

@@ -132,6 +132,32 @@ func TestUnitMergeTunnelHeartbeatsFiltersAndGroups(t *testing.T) {
 	}
 }
 
+// Each target must carry its own advertiser's resource sample — the
+// load_based LB mode is blind without them.
+func TestUnitMergeTunnelHeartbeatsCarriesLoadMetrics(t *testing.T) {
+	hbA := tunnelAdvertiser("node_a", "load_based", false, false, 10*time.Second)
+	hbA.CPUPercent, hbA.RAMPercent, hbA.MonitoringOn = 20, 70, true
+	hbB := tunnelAdvertiser("node_b", "load_based", false, false, 10*time.Second)
+
+	tunnels := mergeTunnelHeartbeats([]NodeHeartbeat{hbA, hbB}, "node_c")
+	if len(tunnels) != 1 {
+		t.Fatalf("got %d tunnels, want 1", len(tunnels))
+	}
+
+	for _, target := range tunnels[0].Targets {
+		switch target.DeviceName {
+		case "node_a":
+			if target.CPUPercent != 20 || target.RAMPercent != 70 || !target.MonitoringOn {
+				t.Errorf("node_a target = %+v, want cpu 20 / ram 70 / monitored", target)
+			}
+		case "node_b":
+			if target.MonitoringOn {
+				t.Errorf("node_b target = %+v, want MonitoringOn false", target)
+			}
+		}
+	}
+}
+
 // A heartbeat with no device name must never govern, and must not stop a named
 // advertiser from governing either.
 func TestUnitMergeTunnelHeartbeatsIgnoresUnnamedAdvertiser(t *testing.T) {

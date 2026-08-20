@@ -8,7 +8,7 @@ import (
 )
 
 func TestValidateRouteLBMode(t *testing.T) {
-	valid := []string{"", "first", "FIRST", "round_robin", "ROUND_ROBIN", "Round_Robin"}
+	valid := []string{"", "first", "FIRST", "round_robin", "ROUND_ROBIN", "Round_Robin", "load_based", "LOAD_BASED"}
 	for _, mode := range valid {
 		route := utils.ProxyRouteConfig{Name: "r", LBMode: mode}
 		if msg := validateRoute(route); msg != "" {
@@ -16,7 +16,7 @@ func TestValidateRouteLBMode(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"load_based", "least_conn", "weighted", "roundrobin", "round robin", " "}
+	invalid := []string{"load-based", "least_conn", "weighted", "roundrobin", "round robin", " "}
 	for _, mode := range invalid {
 		route := utils.ProxyRouteConfig{Name: "r", LBMode: mode}
 		msg := validateRoute(route)

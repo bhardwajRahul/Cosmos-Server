@@ -26,9 +26,48 @@ func (lb *TunnelLoadBalancer) getCounter(routeName string) *routeCounter {
 	return actual.(*routeCounter)
 }
 
+// targetLoad carries a candidate's latest heartbeat resource sample.
+type targetLoad struct {
+	cpu, ram  float64
+	monitored bool
+}
+
+func (lb *TunnelLoadBalancer) roundRobin(keys []string, routeName string) string {
+	c := lb.getCounter(routeName)
+	idx := c.val.Add(1) - 1
+	return keys[idx%uint64(len(keys))]
+}
+
+// leastBusy picks the key with the lowest max(cpu, ram). Same all-or-nothing
+// rule as pro's LeastBusyPlacement: if any candidate lacks trustworthy
+// metrics, the whole decision falls back to round-robin.
+func (lb *TunnelLoadBalancer) leastBusy(keys []string, routeName string, loads map[string]targetLoad) string {
+	best := ""
+	bestScore := 0.0
+	for _, k := range keys {
+		l, ok := loads[k]
+		if !ok || !l.monitored {
+			return lb.roundRobin(keys, routeName)
+		}
+		score := l.cpu
+		if l.ram > score {
+			score = l.ram
+		}
+		if best == "" || score < bestScore {
+			best, bestScore = k, score
+		}
+	}
+	return best
+}
+
 // Select picks a key from the given list using the configured LB mode.
 // Keys can be numeric indices ("0","1") for regular routes or device names for constellation tunnels.
+// "load_based" needs per-key metrics; without them (this path) it degrades to round-robin.
 func (lb *TunnelLoadBalancer) Select(keys []string, routeName string, mode string, sticky bool, stickyKey string) string {
+	return lb.selectKey(keys, routeName, mode, sticky, stickyKey, nil)
+}
+
+func (lb *TunnelLoadBalancer) selectKey(keys []string, routeName string, mode string, sticky bool, stickyKey string, loads map[string]targetLoad) string {
 	if len(keys) == 0 {
 		return ""
 	}
@@ -50,9 +89,9 @@ func (lb *TunnelLoadBalancer) Select(keys []string, routeName string, mode strin
 	var selected string
 	switch strings.ToLower(mode) {
 	case "round_robin":
-		c := lb.getCounter(routeName)
-		idx := c.val.Add(1) - 1
-		selected = keys[idx%uint64(len(keys))]
+		selected = lb.roundRobin(keys, routeName)
+	case "load_based":
+		selected = lb.leastBusy(keys, routeName, loads)
 	case "", "first":
 		selected = keys[0]
 	default:
@@ -76,11 +115,13 @@ func (lb *TunnelLoadBalancer) SelectTarget(targets []utils.TunnelTarget, routeNa
 	}
 
 	keys := make([]string, len(targets))
+	loads := make(map[string]targetLoad, len(targets))
 	for i, t := range targets {
 		keys[i] = t.DeviceName
+		loads[t.DeviceName] = targetLoad{cpu: t.CPUPercent, ram: t.RAMPercent, monitored: t.MonitoringOn}
 	}
 
-	key := lb.Select(keys, routeName, mode, sticky, stickyKey)
+	key := lb.selectKey(keys, routeName, mode, sticky, stickyKey, loads)
 	if key == "" {
 		return nil
 	}

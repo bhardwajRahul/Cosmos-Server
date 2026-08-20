@@ -12,7 +12,7 @@ import (
 func validateRoute(route utils.ProxyRouteConfig) string {
 	if !utils.IsValidLBMode(route.LBMode) {
 		return "Unsupported load balancing mode \"" + route.LBMode + "\" on route \"" + route.Name +
-			"\". Supported modes are \"round_robin\" and \"first\" (an empty value means \"first\": always send traffic to the first/local target)"
+			"\". Supported modes are \"round_robin\", \"load_based\" and \"first\" (an empty value means \"first\": always send traffic to the first/local target)"
 	}
 	return ""
 }
