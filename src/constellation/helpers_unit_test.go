@@ -17,6 +17,8 @@ func TestUnitMatchesDomain(t *testing.T) {
 		want     bool
 	}{
 		{"exact match", "myhost.com.", "myhost.com", true},
+		{"case insensitive", "MyHost.COM.", "myhost.com", true},
+		{"case insensitive hostname", "laptop.", "Laptop", true},
 		{"subdomain match", "a.myhost.com.", "myhost.com", true},
 		{"deep subdomain match", "a.b.myhost.com.", "myhost.com", true},
 		{"regression: suffix without label boundary", "evilmyhost.com.", "myhost.com", false},
@@ -32,6 +34,22 @@ func TestUnitMatchesDomain(t *testing.T) {
 				t.Errorf("matchesDomain(%q, %q) = %v, want %v", tt.qName, tt.hostname, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestUnitDeviceQueryName(t *testing.T) {
+	tests := map[string]string{
+		"laptop.":                   "laptop.",
+		"laptop.constellation.":     "laptop.",
+		"Laptop.Constellation.":     "Laptop.",
+		"a.laptop.constellation.":   "a.laptop.",
+		"constellation.":            "constellation.",
+		"laptop.constellation.com.": "laptop.constellation.com.",
+	}
+	for in, want := range tests {
+		if got := deviceQueryName(in); got != want {
+			t.Errorf("deviceQueryName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -87,23 +105,6 @@ func TestUnitLoadRawBlockList(t *testing.T) {
 	for _, bad := range []string{"0.0.0.0", "# comment line", "garbage", "another.commented.com"} {
 		if blacklist[bad] {
 			t.Errorf("unexpected %q in blacklist", bad)
-		}
-	}
-}
-
-func TestUnitSanitizeNATSUsername(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"my device", "my_device"},
-		{"a.b-c:d/e\\f", "a_b_c_d_e_f"},
-		{"clean_name", "clean_name"},
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := sanitizeNATSUsername(tt.in); got != tt.want {
-			t.Errorf("sanitizeNATSUsername(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }

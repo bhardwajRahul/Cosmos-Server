@@ -22,7 +22,7 @@ func StartSchedulerInConstellation() {
 		utils.Warn("[SCHED] cannot start scheduler: GetCurrentDevice failed: " + err.Error())
 		return
 	}
-	self := sanitizeNATSUsername(device.DeviceName)
+	self := device.DeviceName
 
 	followerOnly := device.CosmosNode != 2
 	if followerOnly {
@@ -49,7 +49,7 @@ func StopSchedulerInConstellation() {
 // scheduler leader, or "" when it cannot be determined (no cluster, NATS not
 // connected, or no leader elected yet). Best-effort — never errors — so it is
 // safe to call from request handlers regardless of cluster state. The name is
-// returned exactly as stored (sanitized via sanitizeNATSUsername); callers
+// returned exactly as stored (the raw DeviceName, validated subject/KV-safe at creation); callers
 // match it client-side rather than reversing the sanitization.
 func GetCurrentLeaderName() string {
 	name, ok := pro.GetLeaderName(&clientConfigLock, nc, js)

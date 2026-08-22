@@ -4,7 +4,7 @@
         "description": "REST API for Cosmos Cloud server management",
         "title": "Cosmos Server API",
         "contact": {},
-        "version": "0.23.0-unstable005"
+        "version": "0.23.0-unstable006"
     },
     "basePath": "/cosmos",
     "paths": {

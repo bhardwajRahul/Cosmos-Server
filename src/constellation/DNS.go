@@ -27,11 +27,6 @@ func externalLookup(client *dns.Client, r *dns.Msg, serverAddr string) (*dns.Msg
 	return client.Exchange(rCopy, serverAddr)
 }
 
-// matchesDomain reports whether qName matches hostname exactly or on a label boundary
-func matchesDomain(qName string, hostname string) bool {
-	return qName == hostname + "." || strings.HasSuffix(qName, "." + hostname + ".")
-}
-
 // isAddrQuery reports whether q asks for an address record. AAAA is claimed and
 // answered empty rather than forwarded, so a client can't bypass us over IPv6.
 func isAddrQuery(q dns.Question) bool {
@@ -79,12 +74,8 @@ func tunneledHostnames() map[string]bool {
 		hostOnly(config.HTTPConfig.Hostname): true,
 	}
 
-	usable := func(host string) bool {
-		return host != "" && !strings.Contains(host, ",") && !strings.Contains(host, " ")
-	}
-
 	for _, route := range config.HTTPConfig.ProxyConfig.Routes {
-		if !route.UseHost || !usable(route.Host) {
+		if !route.UseHost || !usableHost(route.Host) {
 			continue
 		}
 		if route.Tunnel == "" {
@@ -93,7 +84,7 @@ func tunneledHostnames() map[string]bool {
 		}
 		tunneled[hostOnly(route.Host)] = true
 		// GetAllTunneledRoutes publishes TunneledHost as the public Host
-		if usable(route.TunneledHost) {
+		if usableHost(route.TunneledHost) {
 			tunneled[hostOnly(route.TunneledHost)] = true
 		}
 	}
@@ -138,21 +129,6 @@ func dnsAnswerIPs(hostname string, thisIp string, tunneled map[string]bool) []st
 	return []string{thisIp}
 }
 
-// isBlacklisted reports whether domain or any of its parent domains is in DNSBlacklist,
-// so a blacklisted "example.com" also blocks "ads.example.com"
-func isBlacklisted(domain string) bool {
-	for {
-		if DNSBlacklist[domain] {
-			return true
-		}
-		idx := strings.Index(domain, ".")
-		if idx == -1 {
-			return false
-		}
-		domain = domain[idx+1:]
-	}
-}
-
 func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Question) == 0 {
 		m := new(dns.Msg)
@@ -182,19 +158,33 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if !customHandled {
 		customDNSEntries := config.ConstellationConfig.CustomDNSEntries
 
-		// Overwrite local hostnames with custom entries
+		// Overwrite local hostnames with custom entries; exact entries win
+		// over wildcard ones so "*.example.com" can't shadow "app.example.com"
 		for _, q := range r.Question {
+			if !isAddrQuery(q) {
+				continue
+			}
+			matched := []utils.ConstellationDNSEntry{}
 			for _, entry := range customDNSEntries {
-				hostname := entry.Key
-				ip := entry.Value
-
-				if matchesDomain(q.Name, hostname) && isAddrQuery(q) {
-					if q.Qtype == dns.TypeA {
-						utils.Debug("DNS Overwrite " + hostname + " with " + ip)
-						answerA(m, q.Name, ip)
-					}
-					customHandled = true
+				if matchesCustomEntry(q.Name, entry.Key) {
+					matched = append(matched, entry)
 				}
+			}
+			exact := []utils.ConstellationDNSEntry{}
+			for _, entry := range matched {
+				if !strings.ContainsAny(entry.Key, "*?") {
+					exact = append(exact, entry)
+				}
+			}
+			if len(exact) > 0 {
+				matched = exact
+			}
+			for _, entry := range matched {
+				if q.Qtype == dns.TypeA {
+					utils.Debug("DNS Overwrite " + entry.Key + " with " + entry.Value)
+					answerA(m, q.Name, entry.Value)
+				}
+				customHandled = true
 			}
 		}
 	}
@@ -214,19 +204,27 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 					continue
 				}
 
-				// most specific match wins
+				// most specific match wins; on a tie local beats cluster
 				best := ""
 				for _, hostname := range hostnames {
 					if matchesDomain(q.Name, hostname) && len(hostname) > len(best) {
 						best = hostname
 					}
 				}
-				if best == "" {
+				clusterBest, clusterEntry := clusterDNSLookup(q.Name)
+
+				ips := []string{}
+				if best != "" && len(best) >= len(clusterBest) {
+					ips = dnsAnswerIPs(best, thisIp, tunneled)
+				} else if clusterBest != "" {
+					best = clusterBest
+					ips = clusterEntry.IPs
+				} else {
 					continue
 				}
 
 				if q.Qtype == dns.TypeA {
-					for _, ip := range dnsAnswerIPs(best, thisIp, tunneled) {
+					for _, ip := range ips {
 						utils.Debug("DNS Overwrite " + best + " with " + ip)
 						answerA(m, q.Name, ip)
 					}
@@ -241,10 +239,11 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		_, cachedNames := deviceCacheSnapshot()
 		for _, q := range r.Question {
 			utils.Debug("DNS Question " + q.Name)
+			qName := deviceQueryName(q.Name)
 			for deviceName, ip := range cachedNames {
 				procDeviceName := strings.ReplaceAll(deviceName, " ", "-")
 				
-				if matchesDomain(q.Name, procDeviceName) && isAddrQuery(q) {
+				if matchesDomain(qName, procDeviceName) && isAddrQuery(q) {
 					if q.Qtype == dns.TypeA {
 						utils.Debug("DNS Overwrite " + procDeviceName + " with its IP")
 						answerA(m, q.Name, ip)
@@ -258,7 +257,7 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if !customHandled {
 		// Block blacklisted domains
 		for _, q := range r.Question {
-			noDot := strings.TrimSuffix(q.Name, ".")
+			noDot := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 			if isBlacklisted(noDot) {
 				if q.Qtype == dns.TypeA {
 					utils.Debug("DNS Block " + noDot)

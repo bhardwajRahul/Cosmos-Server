@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"sync"
 
 	"github.com/azukaar/cosmos-server/src/utils"
@@ -192,12 +193,18 @@ func DeviceCreate_API(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+var deviceNameRe = regexp.MustCompile(`^[a-z0-9_-]{3,32}$`)
+
 func DeviceCreate(request DeviceCreateRequestJSON) (string, string, string, DeviceCreateRequestJSON, error) {
 	deviceCreateMutex.Lock()
 	defer deviceCreateMutex.Unlock()
 
 	nickname := utils.Sanitize(request.Nickname)
 	deviceName := utils.Sanitize(request.DeviceName)
+	// name is used raw as NATS user, subject token and KV key: no spaces, dots or wildcards
+	if !deviceNameRe.MatchString(deviceName) {
+		return "", "", "", request, errors.New("Device name must be 3-32 characters of a-z, 0-9, '-' or '_'")
+	}
 	APIKey := utils.GenerateRandomString(32)
 
 	if request.Port == "" {

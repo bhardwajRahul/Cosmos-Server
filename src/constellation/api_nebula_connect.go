@@ -135,6 +135,7 @@ func API_NewConstellation(w http.ResponseWriter, req *http.Request) {
 			config.ConstellationConfig.NATSReplicas = request.NATSReplicas
 		}
 		utils.SetBaseMainConfig(config)
+		utils.FBL.AgentMode = false
 
 		// The creator seeds the op-log. In HA there is no JetStream at all until a
 		// second manager enrolls, so it writes straight to SQLite until the log
@@ -320,6 +321,9 @@ func API_ConnectToExisting(w http.ResponseWriter, req *http.Request) {
 		}
 
 		utils.SetBaseMainConfig(config)
+		// RestartNebula below doesn't go through ProcessLicence, so refresh
+		// the in-memory role or a prior reset's AgentMode=false leaks into StartNATS
+		utils.FBL.AgentMode = config.AgentMode
 
 		utils.TriggerEvent(
 			"cosmos.settings",

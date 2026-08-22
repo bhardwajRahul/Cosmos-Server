@@ -1,0 +1,122 @@
+package constellation
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/azukaar/cosmos-server/src/utils"
+)
+
+func seedClusterDNS(t *testing.T, m map[string]clusterHostname) {
+	t.Helper()
+	setClusterDNS(m)
+	t.Cleanup(func() { setClusterDNS(map[string]clusterHostname{}) })
+}
+
+func TestUnitLocalHostnames(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.HTTPConfig.Hostname = "cosmos.local:443"
+		cfg.HTTPConfig.ProxyConfig.Routes = []utils.ProxyRouteConfig{
+			{Name: "plain", UseHost: true, Host: "plain.local:8443"},
+			{Name: "dup", UseHost: true, Host: "plain.local"},
+			{Name: "tunneled", UseHost: true, Host: "tunneled.local", Tunnel: "_ANY_"},
+			{Name: "nohost", UseHost: false, Host: "ignored.local"},
+			{Name: "multi", UseHost: true, Host: "a.local, b.local"},
+		}
+	})
+
+	want := []string{"cosmos.local", "plain.local"}
+	if got := localHostnames(); !reflect.DeepEqual(got, want) {
+		t.Errorf("localHostnames() = %v, want %v", got, want)
+	}
+}
+
+func TestUnitBuildClusterDNS(t *testing.T) {
+	heartbeats := []NodeHeartbeat{
+		{DeviceName: "b", IP: "192.168.201.2/24", Hostnames: []string{"b.local", "shared.local"},
+			Tunnels: []utils.ProxyRouteConfig{
+				{UseHost: true, Host: "tun.local:8443", TunneledHost: "pub.local"},
+				{UseHost: false, Host: "nohost.local"},
+			}},
+		{DeviceName: "c", IP: "192.168.201.3", Hostnames: []string{"shared.local", "both.local"}},
+		{DeviceName: "d", IP: "192.168.201.4", Tunnels: []utils.ProxyRouteConfig{{UseHost: true, Host: "both.local"}}},
+		{DeviceName: "old", IP: "192.168.201.9"}, // pre-upgrade heartbeat without Hostnames
+	}
+	lbs := []string{"192.168.201.1"}
+
+	want := map[string]clusterHostname{
+		"b.local":      {IPs: []string{"192.168.201.2"}},
+		"shared.local": {IPs: []string{"192.168.201.2", "192.168.201.3"}},
+		"tun.local":    {IPs: lbs, Tunneled: true},
+		"pub.local":    {IPs: lbs, Tunneled: true},
+		"both.local":   {IPs: lbs, Tunneled: true},
+	}
+	if got := buildClusterDNS(heartbeats, lbs); !reflect.DeepEqual(got, want) {
+		t.Errorf("buildClusterDNS() = %v, want %v", got, want)
+	}
+
+	// plain seen after tunneled must not demote it either
+	rev := []NodeHeartbeat{heartbeats[2], heartbeats[1]}
+	if got := buildClusterDNS(rev, lbs)["both.local"]; !reflect.DeepEqual(got, want["both.local"]) {
+		t.Errorf("reversed both.local = %v, want %v", got, want["both.local"])
+	}
+
+	// without a load balancer the advertiser is the entry point
+	got := buildClusterDNS(heartbeats[:1], nil)["tun.local"]
+	if !reflect.DeepEqual(got, clusterHostname{IPs: []string{"192.168.201.2"}, Tunneled: true}) {
+		t.Errorf("no-LB tun.local = %v", got)
+	}
+}
+
+func TestUnitHandleDNSRequestClusterHostnames(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.ConstellationConfig.ThisDeviceName = "node-a"
+		cfg.HTTPConfig.Hostname = "a.local"
+		cfg.HTTPConfig.ProxyConfig.Routes = []utils.ProxyRouteConfig{
+			{Name: "mine", UseHost: true, Host: "shared.local"},
+		}
+	})
+	seedDeviceCache(t,
+		utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"},
+		utils.ConstellationDevice{DeviceName: "lb-1", IP: "192.168.201.1", IsLoadBalancer: true},
+	)
+	seedClusterDNS(t, map[string]clusterHostname{
+		"b.local":          {IPs: []string{"192.168.201.2"}},
+		"shared.local":     {IPs: []string{"192.168.201.2"}},
+		"sub.a.local":      {IPs: []string{"192.168.201.3"}},
+		"tun.local":        {IPs: []string{"192.168.201.1"}, Tunneled: true},
+		"shared.tun.local": {IPs: []string{"192.168.201.1"}, Tunneled: true},
+	})
+
+	tests := []struct {
+		qName string
+		want  []string
+	}{
+		{"b.local.", []string{"192.168.201.2"}},         // another node's plain route
+		{"www.b.local.", []string{"192.168.201.2"}},     // subdomain match
+		{"B.LOCAL.", []string{"192.168.201.2"}},         // case-insensitive
+		{"shared.local.", []string{"192.168.201.5"}},    // local wins a tie
+		{"sub.a.local.", []string{"192.168.201.3"}},     // more specific cluster beats shorter local
+		{"tun.local.", []string{"192.168.201.1"}},       // tunnel advertised elsewhere -> LB
+		{"a.local.", []string{"192.168.201.5"}},         // local unchanged
+		{"deep.sub.a.local.", []string{"192.168.201.3"}},
+	}
+	for _, tt := range tests {
+		if got := answeredIPs(t, tt.qName); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("DNS answer for %s = %v, want %v", tt.qName, got, tt.want)
+		}
+	}
+}
+
+func TestUnitClusterDNSLookupTunneledWinsTie(t *testing.T) {
+	seedClusterDNS(t, map[string]clusterHostname{
+		"x.local": {IPs: []string{"192.168.201.1"}, Tunneled: true},
+	})
+	host, entry := clusterDNSLookup("x.local.")
+	if host != "x.local" || !entry.Tunneled {
+		t.Errorf("lookup = %q %v", host, entry)
+	}
+	if host, _ := clusterDNSLookup("nope.local."); host != "" {
+		t.Errorf("unexpected match %q", host)
+	}
+}

@@ -308,7 +308,7 @@ func e2eRegisterOplogControl(mux *http.ServeMux) {
 			fail(w, err)
 			return
 		}
-		conn, err := connectNATSClient(body.URL, sanitizeNATSUsername(body.User), body.Password)
+		conn, err := connectNATSClient(body.URL, body.User, body.Password)
 		if err != nil {
 			writeJSON(w, 200, map[string]interface{}{"connected": false, "error": err.Error()})
 			return

@@ -58,15 +58,15 @@ func designatedKVCreator() (creator string, isSelf bool) {
 		// cannot identify ourselves: claim creatorship rather than deadlock
 		return "", true
 	}
-	self := sanitizeNATSUsername(device.DeviceName)
+	self := device.DeviceName
 	creator = self
 	devices, _ := deviceCacheSnapshot()
 	for _, d := range devices {
 		if d.CosmosNode != 2 || d.DeviceName == "" {
 			continue
 		}
-		if name := sanitizeNATSUsername(d.DeviceName); name < creator {
-			creator = name
+		if d.DeviceName < creator {
+			creator = d.DeviceName
 		}
 	}
 	return creator, creator == self
@@ -182,7 +182,7 @@ func ClientHeartbeatInit() {
 
 	// Only managers create buckets — an agent's unsynced defaults could win
 	// the creation race with the wrong replica count; agents just wait.
-	isAgent := utils.FBL.AgentMode
+	isAgent := isAgentNode()
 
 	// Among managers, only the designated creator normally creates; the
 	// others wait, with a liveness fallback after kvCreatorFallbackAfter of
@@ -396,7 +396,7 @@ func ClientHeartbeatInit() {
 					continue
 				}
 
-				key := sanitizeNATSUsername(device.DeviceName)
+				key := device.DeviceName
 
 				// Docker is authoritative for "what is running here" — query
 				// containers labeled cosmos-deployment each tick rather than
@@ -430,6 +430,7 @@ func ClientHeartbeatInit() {
 					IsExitNode:                device.IsExitNode,
 					CosmosNode:                device.CosmosNode,
 					Tunnels:                   GetAllTunneledRoutes(),
+					Hostnames:                 localHostnames(),
 					RunningDeployments:        running,
 					RunningDeploymentVersions: runningVersions,
 					CPUPercent:                res.CPUPercent,
@@ -591,7 +592,7 @@ func mergeTunnelHeartbeats(heartbeats []NodeHeartbeat, currentDeviceName string)
 	governing := map[string]string{}
 
 	for _, heartbeat := range heartbeats {
-		advertiser := sanitizeNATSUsername(heartbeat.DeviceName)
+		advertiser := heartbeat.DeviceName
 
 		for _, tunnelRoute := range heartbeat.Tunnels {
 			if tunnelRoute.Tunnel != "_ANY_" && tunnelRoute.Tunnel != currentDeviceName {
@@ -702,6 +703,9 @@ func UpdateLocalTunnelCache() {
 		heartbeats = append(heartbeats, heartbeat)
 	}
 	clientConfigLock.RUnlock() // Done with KV operations
+
+	// every node keeps the cluster DNS map, even non load balancers
+	setClusterDNS(buildClusterDNS(heartbeats, loadBalancerIPs()))
 
 	tunnels := mergeTunnelHeartbeats(heartbeats, currentDeviceName)
 

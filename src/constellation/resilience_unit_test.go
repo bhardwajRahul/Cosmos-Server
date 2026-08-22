@@ -65,16 +65,16 @@ func TestUnitDesignatedKVCreator(t *testing.T) {
 	t.Run("self is lowest", func(t *testing.T) {
 		seedDeviceCache(t, manager("node-b"), manager("node-c"), manager("node-d"))
 		creator, isSelf := designatedKVCreator()
-		if creator != "node_b" || !isSelf {
-			t.Errorf("designatedKVCreator() = (%q, %v), want (node_b, true)", creator, isSelf)
+		if creator != "node-b" || !isSelf {
+			t.Errorf("designatedKVCreator() = (%q, %v), want (node-b, true)", creator, isSelf)
 		}
 	})
 
 	t.Run("another manager is lowest", func(t *testing.T) {
 		seedDeviceCache(t, manager("node-a"), manager("node-b"), manager("node-c"))
 		creator, isSelf := designatedKVCreator()
-		if creator != "node_a" || isSelf {
-			t.Errorf("designatedKVCreator() = (%q, %v), want (node_a, false)", creator, isSelf)
+		if creator != "node-a" || isSelf {
+			t.Errorf("designatedKVCreator() = (%q, %v), want (node-a, false)", creator, isSelf)
 		}
 	})
 
@@ -82,8 +82,8 @@ func TestUnitDesignatedKVCreator(t *testing.T) {
 		agent := utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.9", CosmosNode: 1}
 		seedDeviceCache(t, agent, manager("node-b"))
 		creator, isSelf := designatedKVCreator()
-		if creator != "node_b" || !isSelf {
-			t.Errorf("designatedKVCreator() = (%q, %v), want (node_b, true)", creator, isSelf)
+		if creator != "node-b" || !isSelf {
+			t.Errorf("designatedKVCreator() = (%q, %v), want (node-b, true)", creator, isSelf)
 		}
 	})
 }

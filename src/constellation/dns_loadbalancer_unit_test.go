@@ -188,3 +188,62 @@ func TestUnitDnsAnswerIPsFallsBackWithoutLoadBalancer(t *testing.T) {
 		t.Errorf("dnsAnswerIPs with no load balancer known = %v, want %v", got, want)
 	}
 }
+
+func TestUnitHandleDNSRequestDeviceSuffixAndCase(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.ConstellationConfig.ThisDeviceName = "node-a"
+		cfg.HTTPConfig.Hostname = "cosmos.local"
+	})
+	seedDeviceCache(t,
+		utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"},
+		utils.ConstellationDevice{DeviceName: "My Laptop", IP: "192.168.201.7"},
+	)
+
+	tests := []struct {
+		qName string
+		want  []string
+	}{
+		{"my-laptop.", []string{"192.168.201.7"}},
+		{"My-Laptop.", []string{"192.168.201.7"}},
+		{"my-laptop.constellation.", []string{"192.168.201.7"}},
+		{"MY-LAPTOP.CONSTELLATION.", []string{"192.168.201.7"}},
+		{"node-a.constellation.", []string{"192.168.201.5"}},
+	}
+	for _, tt := range tests {
+		if got := answeredIPs(t, tt.qName); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("DNS answer for %s = %v, want %v", tt.qName, got, tt.want)
+		}
+	}
+}
+
+func TestUnitHandleDNSRequestCustomWildcard(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.ConstellationConfig.ThisDeviceName = "node-a"
+		cfg.HTTPConfig.Hostname = "cosmos.local"
+		cfg.ConstellationConfig.CustomDNSEntries = []utils.ConstellationDNSEntry{
+			{Key: "*.example.com", Value: "10.0.0.1"},
+			{Key: "app.example.com", Value: "10.0.0.2"},
+			{Key: "ads*.net", Value: "10.0.0.3"},
+			{Key: "plain.org", Value: "10.0.0.4"},
+		}
+	})
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"})
+
+	tests := []struct {
+		qName string
+		want  []string
+	}{
+		{"foo.example.com.", []string{"10.0.0.1"}},
+		{"deep.foo.example.com.", []string{"10.0.0.1"}},
+		{"FOO.EXAMPLE.COM.", []string{"10.0.0.1"}},
+		{"app.example.com.", []string{"10.0.0.2"}},
+		{"ads1.net.", []string{"10.0.0.3"}},
+		{"adserver.tracking.net.", []string{"10.0.0.3"}},
+		{"sub.plain.org.", []string{"10.0.0.4"}},
+	}
+	for _, tt := range tests {
+		if got := answeredIPs(t, tt.qName); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("DNS answer for %s = %v, want %v", tt.qName, got, tt.want)
+		}
+	}
+}

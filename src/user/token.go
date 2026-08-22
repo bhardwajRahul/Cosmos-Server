@@ -33,6 +33,23 @@ func quickLoggout(w http.ResponseWriter, req *http.Request, err error) (utils.Us
 	return utils.User{}, errors.New("Token likely falsified")
 }
 
+// tokenValidForHost: a tunneled hop arrives with Host rewritten to the primary
+// domain, but the cookie was issued on the peer's TunneledHost alias
+func tokenValidForHost(req *http.Request, reqHostNoPort, forDomain string) bool {
+	if strings.HasSuffix(reqHostNoPort, forDomain) {
+		return true
+	}
+	if req.Header.Get("x-cstln-auth") == "" {
+		return false
+	}
+	for _, r := range utils.GetMainConfig().HTTPConfig.ProxyConfig.Routes {
+		if h := strings.Split(r.TunneledHost, ":")[0]; h != "" && strings.HasSuffix(h, forDomain) {
+			return true
+		}
+	}
+	return false
+}
+
 func RefreshUserToken(w http.ResponseWriter, req *http.Request) ([]utils.Permission, bool, utils.User, error) {
 	config := utils.GetMainConfig()
 	
@@ -133,7 +150,7 @@ func RefreshUserToken(w http.ResponseWriter, req *http.Request) ([]utils.Permiss
 	reqHostname := req.Host
 	reqHostNoPort := strings.Split(reqHostname, ":")[0]
 
-	if !strings.HasSuffix(reqHostNoPort, forDomain) {
+	if !tokenValidForHost(req, reqHostNoPort, forDomain) {
 		utils.Error("UserToken: token is not valid for this domain", nil)
 		logOutUser(w, req)
 		redirectToReLogin(w, req)

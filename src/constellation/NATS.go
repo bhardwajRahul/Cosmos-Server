@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +33,9 @@ type NodeHeartbeat struct {
 	IsExitNode   bool
 	CosmosNode   int
 	Tunnels      []utils.ProxyRouteConfig
+	// Hostnames are the names this node serves itself (main hostname and
+	// non-tunneled routes) so every constellation DNS can answer for them.
+	Hostnames []string `json:"hostnames,omitempty"`
 	// RunningDeployments is the list of scheduler-managed deployment names
 	// currently running on this node, derived from docker containers carrying
 	// the `cosmos-deployment` label. Populated from docker at heartbeat time;
@@ -78,16 +80,6 @@ func redactSecret(s string) string {
 		return "****(len " + strconv.Itoa(len(s)) + ")"
 	}
 	return s[:4] + "****(len " + strconv.Itoa(len(s)) + ")"
-}
-
-func sanitizeNATSUsername(username string) string {
-	username = strings.ReplaceAll(username, " ", "_")
-	username = strings.ReplaceAll(username, ".", "_")
-	username = strings.ReplaceAll(username, "-", "_")
-	username = strings.ReplaceAll(username, ":", "_")
-	username = strings.ReplaceAll(username, "/", "_")
-	username = strings.ReplaceAll(username, "\\", "_")
-	return username
 }
 
 // the mobile app's only subject (see MasterNATSClientRouter)
@@ -252,6 +244,16 @@ func blockedDeviceIPs() map[string]bool {
 		delete(blocked, cleanIp(d.IP))
 	}
 	return blocked
+}
+
+// isAgentNode derives the role from nebula.yml (cstln_cosmos_node) via
+// GetCurrentDevice, the source of truth that survives enrollment without a
+// ProcessLicence refresh; FBL.AgentMode is only the fallback when it's unreadable.
+func isAgentNode() bool {
+	if d, err := GetCurrentDevice(); err == nil && d.CosmosNode > 0 {
+		return d.CosmosNode == 1
+	}
+	return utils.FBL.AgentMode
 }
 
 // getManagerIPs returns the nebula IPs of every known Manager node
@@ -420,7 +422,7 @@ func StartNATS() {
 
 	cachedDevices, _ := deviceCacheSnapshot()
 	for _, devices := range cachedDevices {
-		username := sanitizeNATSUsername(devices.DeviceName)
+		username := devices.DeviceName
 		if seenUsers[username] {
 			continue
 		}
@@ -459,7 +461,7 @@ func StartNATS() {
 	// members, agents attach as leafnodes. nats-server sizes and persists
 	// the JS meta-Raft group from the initial route list, so routes must
 	// never point at non-voters.
-	isAgent := utils.FBL.AgentMode
+	isAgent := isAgentNode()
 	haMode := IsNATSHA()
 
 	opts := &server.Options{
@@ -503,7 +505,7 @@ func StartNATS() {
 		for _, mip := range managerIPs {
 			leafURLs = append(leafURLs, &url.URL{
 				Scheme: "nats-leaf",
-				User:   url.UserPassword(sanitizeNATSUsername(user), pwd),
+				User:   url.UserPassword(user, pwd),
 				Host:   mip + ":" + strconv.Itoa(natsLeafPort),
 			})
 		}
@@ -825,7 +827,6 @@ func InitNATSClient() error {
 	time.Sleep(2 * time.Second)
 
 	user, pwd, err := GetNATSCredentials()
-	user = sanitizeNATSUsername(user)
 
 	if err != nil {
 		utils.MajorError("[NATS] Error getting constellation credentials", err)
@@ -1041,7 +1042,7 @@ type NATSStatus struct {
 }
 
 func GetNATSStatus() NATSStatus {
-	isAgent := utils.FBL.AgentMode
+	isAgent := isAgentNode()
 
 	srv := ns.Load()
 	status := NATSStatus{
@@ -1244,7 +1245,7 @@ func MasterNATSClientRouter() {
 	// Scheduler: subscribe this node to its own per-target deployment command
 	// subject so the leader can dispatch apply/remove here.
 	if device, err := GetCurrentDevice(); err == nil {
-		self := sanitizeNATSUsername(device.DeviceName)
+		self := device.DeviceName
 		if subErr := pro.RegisterNodeDispatchHandler(nc, self); subErr != nil {
 			utils.Warn("[SCHED-NODE] failed to register dispatch handler: " + subErr.Error())
 		}
@@ -1260,7 +1261,7 @@ func PingNATSClient() bool {
 
 	// An isolated agent's local client still looks healthy — without a
 	// leafnode link to a manager it isn't connected to the constellation.
-	if srv := ns.Load(); utils.FBL.AgentMode && (srv == nil || srv.NumLeafNodes() == 0) {
+	if srv := ns.Load(); isAgentNode() && (srv == nil || srv.NumLeafNodes() == 0) {
 		utils.Warn("[NATS] Agent has no leafnode link to a manager")
 		return false
 	}
