@@ -982,6 +982,14 @@ func IsConstellationStandalone() bool {
 		}
 	}
 	// Before the initial sync, CachedDevices only knows about this server.
+	// The enrollment seed managers exist for exactly this window: an agent that
+	// is itself the lighthouse would otherwise read as standalone and never
+	// start the heartbeat/op-log that populates the cache.
+	for _, ip := range getSeedManagerIPs() {
+		if ip != cleanIp(myIP) {
+			return false
+		}
+	}
 	// GetClusterIPs also pulls peer lighthouses from the nebula config file,
 	// so fall back to it to detect bootstrap-time peers we can cluster with.
 	cips, _ := GetClusterIPs()
