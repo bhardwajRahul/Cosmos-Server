@@ -42,7 +42,7 @@ export const getNestedValue = (values, path) => {
   }, values);
 };
 
-export const CosmosInputText = ({ name, style, value, errors, multiline, type, placeholder, onChange, label, formik, disabled }) => {
+export const CosmosInputText = ({ name, style, value, errors, multiline, type, placeholder, onChange, label, formik, disabled, autoComplete, inputProps }) => {
   return <Grid item xs={12}>
     <Stack spacing={1} style={style}>
       {label && <InputLabel htmlFor={name}>{label}</InputLabel>}
@@ -53,6 +53,8 @@ export const CosmosInputText = ({ name, style, value, errors, multiline, type, p
         value={value || (formik && getNestedValue(formik.values, name))}
         name={name}
         multiline={multiline}
+        autoComplete={autoComplete}
+        inputProps={inputProps}
         onBlur={(...ar) => {
           return formik && formik.handleBlur(...ar);
         }}

@@ -1,9 +1,77 @@
 package constellation
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+
 	"github.com/azukaar/cosmos-server/src/utils"
 )
+
+type DeviceResyncRequest struct {
+	Nickname string `json:"nickname" validate:"required,max=32"`
+	DeviceName string `json:"deviceName" validate:"required,min=3,max=32"`
+}
+
+// GetDeviceConfigManualSync rebuilds a device's config (no pki/api key) for a resync QR
+func GetDeviceConfigManualSync(w http.ResponseWriter, req *http.Request) {
+	if req.Method != "POST" {
+		utils.Error("DeviceConfigManualSync: Method not allowed" + req.Method, nil)
+		utils.HTTPError(w, "Method not allowed", http.StatusMethodNotAllowed, "HTTP001")
+		return
+	}
+
+	var request DeviceResyncRequest
+	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+		utils.Error("DeviceConfigManualSync: Invalid User Request", err)
+		utils.HTTPError(w, "Device Resync Error", http.StatusBadRequest, "DB001")
+		return
+	}
+	if err := utils.Validate.Struct(request); err != nil {
+		utils.Error("DeviceConfigManualSync: Invalid User Request", err)
+		utils.HTTPError(w, "Device Resync Error: " + err.Error(), http.StatusBadRequest, "DB002")
+		return
+	}
+
+	nickname := utils.Sanitize(request.Nickname)
+	deviceName := utils.Sanitize(request.DeviceName)
+
+	if utils.CheckPermissionsOrSelf(w, req, nickname, utils.PERM_RESOURCES) != nil {
+		return
+	}
+
+	devices, err := utils.FindDevices(map[string]interface{}{
+		"Nickname": nickname,
+		"DeviceName": deviceName,
+	})
+	if err != nil {
+		utils.Error("DeviceConfigManualSync: Error fetching devices", err)
+		utils.HTTPError(w, "Error fetching devices", http.StatusInternalServerError, "DL003")
+		return
+	}
+	if len(devices) == 0 {
+		utils.Error("DeviceConfigManualSync: device not found", nil)
+		utils.HTTPError(w, "Device not found", http.StatusNotFound, "DCS001")
+		return
+	}
+
+	utils.Log("DeviceConfigManualSync: Resync Device " + deviceName)
+
+	d := devices[0]
+	d.PublicKey = ""
+	d.APIKey = ""
+	configYml, err := getYAMLClientConfig(d.DeviceName, utils.CONFIGFOLDER + "nebula.yml", "", "", "", "", d, true, true)
+	if err != nil {
+		utils.Error("DeviceConfigManualSync: Error marshalling nebula.yml", err)
+		utils.HTTPError(w, "Error marshalling nebula.yml", http.StatusInternalServerError, "DCS003")
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "OK",
+		"data": string(configYml),
+	})
+}
 
 func compareConfigs(configMap, configMapNew map[string]interface{}) bool {
 	configMapStr := fmt.Sprintf("%+v", configMap)

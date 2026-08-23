@@ -223,13 +223,13 @@ const ConfigGeneral = ({ formik, config, status, isAdmin }) => {
 
       <MainCard title={t('mgmt.config.general.licenceInput.licenceLabel')}>
         <Grid container spacing={3}>
-          <CosmosInputPassword
-            noStrength
+          <CosmosInputText
             label={t('mgmt.config.general.licenceInput.licenceLabel')}
             name="Licence"
             formik={formik}
-            helperText="Licence Key"
-            autoComplete={'licence-key'}
+            multiline
+            autoComplete="off"
+            inputProps={{ 'data-1p-ignore': true, 'data-lpignore': 'true', 'data-bwignore': true, style: { fontFamily: 'monospace' } }}
             onChange={(e) => {
               formik.setFieldValue("ServerToken", "");
             }}
