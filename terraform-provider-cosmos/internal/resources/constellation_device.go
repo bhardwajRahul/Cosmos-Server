@@ -333,7 +333,6 @@ func (r *constellationDeviceResource) Delete(ctx context.Context, req resource.D
 	name := state.DeviceName.ValueString()
 	httpResp, err := r.client.Raw.PostApiConstellationBlock(ctx, cosmossdk.ConstellationDeviceBlockRequestJSON{
 		DeviceName: name,
-		Nickname:   name,
 		Block:      client.BoolPtr(true),
 	})
 	if err != nil {
