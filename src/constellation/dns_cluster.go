@@ -21,6 +21,12 @@ func usableHost(host string) bool {
 	return host != "" && !strings.Contains(host, ",") && !strings.Contains(host, " ")
 }
 
+// tunnelHostOverridden reports whether the tunnel exit serves TunneledHost instead of Host.
+func tunnelHostOverridden(route utils.ProxyRouteConfig) bool {
+	return usableHost(route.TunneledHost) &&
+		!strings.EqualFold(hostOnly(route.TunneledHost), hostOnly(route.Host))
+}
+
 // localHostnames lists the names this node serves itself (main hostname and
 // non-tunneled routes), advertised in the heartbeat so every DNS can answer
 func localHostnames() []string {
@@ -39,7 +45,11 @@ func localHostnames() []string {
 
 	add(config.HTTPConfig.Hostname)
 	for _, route := range config.HTTPConfig.ProxyConfig.Routes {
-		if route.UseHost && route.Tunnel == "" {
+		if !route.UseHost {
+			continue
+		}
+		// overridden exit serves only TunneledHost, so the origin advertises Host
+		if route.Tunnel == "" || tunnelHostOverridden(route) {
 			add(route.Host)
 		}
 	}

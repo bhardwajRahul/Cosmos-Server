@@ -3,40 +3,98 @@ package configapi
 import (
 	"net/http"
 	"encoding/json"
+	"reflect"
 	"github.com/azukaar/cosmos-server/src/constellation"
 	"github.com/azukaar/cosmos-server/src/utils"
 )
 
-// publishReplicatedDomains publishes the four op-log domains this whole-config
-// PUT can touch. Full-state ops are idempotent, so publishing all four
-// unconditionally is cheaper than diffing and cannot miss a change. APITokens and
-// the auth keypair are restored from disk above, so they are not editable here.
-func publishReplicatedDomains(request utils.Config) error {
-	c := request.ConstellationConfig
-	err := constellation.PublishDomainOp(constellation.DomainDNS, constellation.DNSPayload{
-		DNSPort:                 c.DNSPort,
-		DNSFallback:             c.DNSFallback,
-		DNSBlockBlacklist:       c.DNSBlockBlacklist,
-		DNSAdditionalBlocklists: c.DNSAdditionalBlocklists,
-		CustomDNSEntries:        c.CustomDNSEntries,
-	})
-	if err != nil {
-		return err
+// publishReplicatedDomains publishes only the domains this PUT changed, so a
+// node without a writable op-log can still save node-local settings.
+func publishReplicatedDomains(request utils.Config, current utils.Config) error {
+	newDNS := dnsPayloadOf(request)
+	if !reflect.DeepEqual(newDNS, dnsPayloadOf(current)) {
+		if err := constellation.PublishDomainOp(constellation.DomainDNS, newDNS); err != nil {
+			return err
+		}
 	}
-	if err := constellation.PublishDomainOp(constellation.DomainRoles, request.Roles); err != nil {
-		return err
+	if !sameRoles(request.Roles, current.Roles) {
+		if err := constellation.PublishDomainOp(constellation.DomainRoles, request.Roles); err != nil {
+			return err
+		}
 	}
-	if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, request.OpenIDClients); err != nil {
-		return err
+	if !sameOpenIDClients(request.OpenIDClients, current.OpenIDClients) {
+		if err := constellation.PublishDomainOp(constellation.DomainOpenIDClients, request.OpenIDClients); err != nil {
+			return err
+		}
 	}
-	// the real password, restored above — publishing before that restore would send
-	// the literal "***" to every node
-	return constellation.PublishDomainOp(constellation.DomainDatabase, constellation.DatabasePayload{
-		PostgresHost:     request.Database.PostgresHost,
-		PostgresDatabase: request.Database.PostgresDatabase,
-		PostgresUsername: request.Database.PostgresUsername,
-		PostgresPassword: request.Database.PostgresPassword,
-	})
+	// caller restored the real password; publishing earlier would replicate "***"
+	newDB := dbPayloadOf(request)
+	if !reflect.DeepEqual(newDB, dbPayloadOf(current)) {
+		return constellation.PublishDomainOp(constellation.DomainDatabase, newDB)
+	}
+	return nil
+}
+
+// slices are normalized to nil so a UI []-for-null round-trip never looks like a change
+func dnsPayloadOf(c utils.Config) constellation.DNSPayload {
+	cc := c.ConstellationConfig
+	blocklists := cc.DNSAdditionalBlocklists
+	if len(blocklists) == 0 {
+		blocklists = nil
+	}
+	entries := cc.CustomDNSEntries
+	if len(entries) == 0 {
+		entries = nil
+	}
+	return constellation.DNSPayload{
+		DNSPort:                 cc.DNSPort,
+		DNSFallback:             cc.DNSFallback,
+		DNSBlockBlacklist:       cc.DNSBlockBlacklist,
+		DNSAdditionalBlocklists: blocklists,
+		CustomDNSEntries:        entries,
+	}
+}
+
+func dbPayloadOf(c utils.Config) constellation.DatabasePayload {
+	return constellation.DatabasePayload{
+		PostgresHost:     c.Database.PostgresHost,
+		PostgresDatabase: c.Database.PostgresDatabase,
+		PostgresUsername: c.Database.PostgresUsername,
+		PostgresPassword: c.Database.PostgresPassword,
+	}
+}
+
+// nil and empty are the same thing here: JSON round-trips blur them
+func sameRoles(a, b map[utils.Role]utils.RoleConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, ra := range a {
+		rb, ok := b[k]
+		if !ok || ra.Name != rb.Name || !samePermissions(ra.Permissions, rb.Permissions) {
+			return false
+		}
+	}
+	return true
+}
+
+func samePermissions(a, b []utils.Permission) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameOpenIDClients(a, b []utils.OpenIDClient) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // restoreReplicatedDomains takes the replicated fields from the freshly applied
@@ -156,12 +214,10 @@ func ConfigApiSet(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 
-		// Replicated domains go through the op-log, never straight to disk. Published
-		// BEFORE the local write so a read-only node fails here with nothing written,
-		// rather than leaving a node-local edit the log will never hear about and the
-		// next snapshot will silently discard. ConfigLock must NOT be held across
-		// these — the apply loop takes it to install the op we are waiting on.
-		if err := publishReplicatedDomains(request); err != nil {
+		// Replicated domains go through the op-log, never straight to disk, and are
+		// published BEFORE the local write so a read-only node fails with nothing
+		// written. ConfigLock must NOT be held — the apply loop takes it.
+		if err := publishReplicatedDomains(request, config); err != nil {
 			utils.HTTPStoreError(w, err, "UC004")
 			return
 		}

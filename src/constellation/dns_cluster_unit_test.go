@@ -20,12 +20,13 @@ func TestUnitLocalHostnames(t *testing.T) {
 			{Name: "plain", UseHost: true, Host: "plain.local:8443"},
 			{Name: "dup", UseHost: true, Host: "plain.local"},
 			{Name: "tunneled", UseHost: true, Host: "tunneled.local", Tunnel: "_ANY_"},
+			{Name: "aliased", UseHost: true, Host: "private.local", TunneledHost: "public.local:8443", Tunnel: "_ANY_"},
 			{Name: "nohost", UseHost: false, Host: "ignored.local"},
 			{Name: "multi", UseHost: true, Host: "a.local, b.local"},
 		}
 	})
 
-	want := []string{"cosmos.local", "plain.local"}
+	want := []string{"cosmos.local", "plain.local", "private.local"}
 	if got := localHostnames(); !reflect.DeepEqual(got, want) {
 		t.Errorf("localHostnames() = %v, want %v", got, want)
 	}

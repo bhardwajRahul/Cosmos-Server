@@ -82,11 +82,13 @@ func tunneledHostnames() map[string]bool {
 			local[hostOnly(route.Host)] = true
 			continue
 		}
-		tunneled[hostOnly(route.Host)] = true
-		// GetAllTunneledRoutes publishes TunneledHost as the public Host
-		if usableHost(route.TunneledHost) {
+		// overridden exit serves only TunneledHost; the origin still serves Host
+		if tunnelHostOverridden(route) {
+			local[hostOnly(route.Host)] = true
 			tunneled[hostOnly(route.TunneledHost)] = true
+			continue
 		}
+		tunneled[hostOnly(route.Host)] = true
 	}
 
 	for host := range local {

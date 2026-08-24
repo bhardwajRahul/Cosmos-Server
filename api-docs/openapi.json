@@ -4,7 +4,7 @@
     "description": "REST API for Cosmos Cloud server management",
     "title": "Cosmos Server API",
     "contact": {},
-    "version": "0.23.0-unstable008"
+    "version": "0.23.0-unstable009"
   },
   "paths": {
     "/_logs": {
@@ -10741,8 +10741,7 @@
       "constellation.DeviceBlockRequestJSON": {
         "type": "object",
         "required": [
-          "deviceName",
-          "nickname"
+          "deviceName"
         ],
         "properties": {
           "block": {

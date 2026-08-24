@@ -9,7 +9,7 @@ import (
 )
 
 type DeviceResyncRequest struct {
-	Nickname string `json:"nickname" validate:"required,max=32"`
+	Nickname string `json:"nickname" validate:"omitempty,max=32"`
 	DeviceName string `json:"deviceName" validate:"required,min=3,max=32"`
 }
 
@@ -33,15 +33,9 @@ func GetDeviceConfigManualSync(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	nickname := utils.Sanitize(request.Nickname)
 	deviceName := utils.Sanitize(request.DeviceName)
 
-	if utils.CheckPermissionsOrSelf(w, req, nickname, utils.PERM_RESOURCES) != nil {
-		return
-	}
-
 	devices, err := utils.FindDevices(map[string]interface{}{
-		"Nickname": nickname,
 		"DeviceName": deviceName,
 	})
 	if err != nil {
@@ -55,9 +49,14 @@ func GetDeviceConfigManualSync(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	utils.Log("DeviceConfigManualSync: Resync Device " + deviceName)
-
 	d := devices[0]
+
+	// authorize against the device's actual nickname, not the request-supplied one
+	if utils.CheckPermissionsOrSelf(w, req, d.Nickname, utils.PERM_RESOURCES) != nil {
+		return
+	}
+
+	utils.Log("DeviceConfigManualSync: Resync Device " + deviceName)
 	d.PublicKey = ""
 	d.APIKey = ""
 	configYml, err := getYAMLClientConfig(d.DeviceName, utils.CONFIGFOLDER + "nebula.yml", "", "", "", "", d, true, true)

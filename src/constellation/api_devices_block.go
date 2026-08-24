@@ -8,7 +8,7 @@ import (
 )
 
 type DeviceBlockRequestJSON struct {
-  Nickname string `json:"nickname" validate:"required,min=3,max=32"`
+  Nickname string `json:"nickname" validate:"omitempty,min=3,max=32"`
   DeviceName string `json:"deviceName" validate:"required,min=3,max=32"`
   Block bool `json:"block,omitempty"`
 }
@@ -63,6 +63,14 @@ func DeviceBlock(w http.ResponseWriter, req *http.Request) {
 
 			// authorize against the device's actual nickname, not the request-supplied one
 			if utils.CheckPermissionsOrSelf(w, req, device.Nickname, utils.PERM_RESOURCES) != nil {
+				return
+			}
+
+			// managers (CosmosNode == 2) cannot be blocked; agents (1) and clients (0) can
+			if request.Block && device.CosmosNode == 2 {
+				utils.Error("DeviceBlocking: Attempt to block a manager server", nil)
+				utils.HTTPError(w, "Constellation Error: " + deviceName + " is a manager server and cannot be blocked. Remove it from the Constellation instead.",
+					http.StatusBadRequest, "DB003")
 				return
 			}
 

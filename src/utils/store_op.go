@@ -345,7 +345,7 @@ func HTTPStoreError(w http.ResponseWriter, err error, userCode string) {
 	var ec *ErrConstraint
 	switch {
 	case errors.Is(err, ErrReadOnly):
-		HTTPError(w, "Configuration is read-only: no writable op-log (no quorum)", http.StatusConflict, userCode)
+		HTTPError(w, "Cannot save synchronized settings: the Constellation cluster is unreachable or degraded", http.StatusConflict, userCode)
 	case errors.Is(err, ErrApplyTimeout):
 		HTTPError(w, "Timed out waiting for the change to be applied", http.StatusServiceUnavailable, userCode)
 	case errors.As(err, &ec):

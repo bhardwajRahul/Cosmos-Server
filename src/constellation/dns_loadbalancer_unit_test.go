@@ -72,7 +72,6 @@ func TestUnitTunneledHostnames(t *testing.T) {
 	want := map[string]bool{
 		"lbtest.constellation": true,
 		"ported.constellation": true,
-		"private.local":        true,
 		"public.constellation": true,
 	}
 
