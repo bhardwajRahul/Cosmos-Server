@@ -246,3 +246,123 @@ func TestUnitHandleDNSRequestCustomWildcard(t *testing.T) {
 		}
 	}
 }
+
+// answeredMsg asks the handler for qName and returns the raw reply
+func answeredMsg(t *testing.T, qName string) *dns.Msg {
+	t.Helper()
+
+	req := new(dns.Msg)
+	req.SetQuestion(qName, dns.TypeA)
+
+	w := &captureDNSWriter{}
+	handleDNSRequest(w, req)
+
+	if w.msg == nil {
+		t.Fatal("handleDNSRequest wrote no reply for " + qName)
+	}
+	return w.msg
+}
+
+// deadDNSFallback: a query that wrongly leaves the handler fails fast as
+// SERVFAIL instead of reaching a real resolver
+const deadDNSFallback = "127.0.0.1:1"
+
+// overriddenTunnelConfig mirrors the two-server scenario: this node is the
+// tunnel origin, the exit serves the routes under an overridden TunneledHost
+func overriddenTunnelConfig(cfg *utils.Config) {
+	cfg.ConstellationConfig.ThisDeviceName = "node-a"
+	cfg.ConstellationConfig.DNSFallback = deadDNSFallback
+	cfg.HTTPConfig.Hostname = "cosmos.local"
+	cfg.HTTPConfig.ProxyConfig.Routes = []utils.ProxyRouteConfig{
+		{Name: "aliased", UseHost: true, Host: "no-tunnel.domain.com", TunneledHost: "tunnel.domain.com", Tunnel: "node-lb"},
+		{Name: "aliased-port", UseHost: true, Host: "private2.domain.com", TunneledHost: "tunnel2.domain.com:8443", Tunnel: "_ANY_"},
+		{Name: "plain", UseHost: true, Host: "plain.domain.com"},
+	}
+}
+
+func TestUnitHandleDNSRequestOverriddenTunnelHostname(t *testing.T) {
+	setupTestEnv(t, overriddenTunnelConfig)
+	seedDeviceCache(t,
+		utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"},
+		utils.ConstellationDevice{DeviceName: "node-lb", IP: "192.168.201.2", IsLoadBalancer: true},
+	)
+
+	tests := []struct {
+		qName string
+		want  []string
+	}{
+		// the origin keeps serving the route's original Host itself
+		{"no-tunnel.domain.com.", []string{"192.168.201.5"}},
+		{"private2.domain.com.", []string{"192.168.201.5"}},
+		{"plain.domain.com.", []string{"192.168.201.5"}},
+		// the overridden TunneledHost must resolve to the load balancer from
+		// local config alone — no heartbeat or cluster data is seeded here
+		{"tunnel.domain.com.", []string{"192.168.201.2"}},
+		{"sub.tunnel.domain.com.", []string{"192.168.201.2"}},
+		{"TUNNEL.DOMAIN.COM.", []string{"192.168.201.2"}},
+		{"tunnel2.domain.com.", []string{"192.168.201.2"}},
+	}
+	for _, tt := range tests {
+		if got := answeredIPs(t, tt.qName); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("DNS answer for %s = %v, want %v", tt.qName, got, tt.want)
+		}
+	}
+}
+
+func TestUnitOverriddenTunnelHostNotForwarded(t *testing.T) {
+	setupTestEnv(t, overriddenTunnelConfig)
+	seedDeviceCache(t,
+		utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"},
+		utils.ConstellationDevice{DeviceName: "node-lb", IP: "192.168.201.2", IsLoadBalancer: true},
+	)
+
+	msg := answeredMsg(t, "tunnel.domain.com.")
+	if !msg.Authoritative || msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
+		t.Errorf("tunnel.domain.com. was forwarded upstream instead of answered locally: rcode=%d authoritative=%v answers=%d",
+			msg.Rcode, msg.Authoritative, len(msg.Answer))
+	}
+}
+
+func TestUnitHandleDNSRequestUnknownForwarded(t *testing.T) {
+	// sanity check on the harness: an unknown name really is forwarded, and the
+	// dead fallback turns that into SERVFAIL — so empty answers above mean
+	// "left the handler", not "answered empty"
+	setupTestEnv(t, overriddenTunnelConfig)
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"})
+
+	msg := answeredMsg(t, "unrelated.example.org.")
+	if msg.Rcode != dns.RcodeServerFailure {
+		t.Errorf("expected unknown name to be forwarded (dead fallback -> SERVFAIL), got rcode=%d answers=%d", msg.Rcode, len(msg.Answer))
+	}
+}
+
+func TestUnitHandleDNSRequestOverriddenTunnelNoLBFallback(t *testing.T) {
+	// no load balancer known yet: answer this node rather than leak upstream
+	setupTestEnv(t, overriddenTunnelConfig)
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"})
+
+	want := []string{"192.168.201.5"}
+	if got := answeredIPs(t, "tunnel.domain.com."); !reflect.DeepEqual(got, want) {
+		t.Errorf("DNS answer for tunnel.domain.com. with no LB = %v, want %v", got, want)
+	}
+}
+
+func TestUnitTunneledHostnamesOverrideEdgeCases(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.ConstellationConfig.ThisDeviceName = "node-a"
+		cfg.HTTPConfig.Hostname = "cosmos.local"
+		cfg.HTTPConfig.ProxyConfig.Routes = []utils.ProxyRouteConfig{
+			// override colliding with a host served locally: local wins
+			{Name: "local-app", UseHost: true, Host: "app.local"},
+			{Name: "collide", UseHost: true, Host: "origin1.local", TunneledHost: "app.local", Tunnel: "_ANY_"},
+			// TunneledHost differing only by case/port is not an override
+			{Name: "same", UseHost: true, Host: "same.local", TunneledHost: "SAME.local:8443", Tunnel: "_ANY_"},
+		}
+	})
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"})
+
+	want := map[string]bool{"same.local": true}
+	if got := tunneledHostnames(); !reflect.DeepEqual(got, want) {
+		t.Errorf("tunneledHostnames() = %v, want %v", got, want)
+	}
+}

@@ -121,3 +121,25 @@ func TestUnitClusterDNSLookupTunneledWinsTie(t *testing.T) {
 		t.Errorf("unexpected match %q", host)
 	}
 }
+
+func TestUnitTunnelHostOverridden(t *testing.T) {
+	tests := []struct {
+		host, tunneledHost string
+		want               bool
+	}{
+		{"a.local", "", false},
+		{"a.local", "a.local", false},
+		{"a.local", "A.LOCAL", false},           // case-insensitive
+		{"a.local:8443", "a.local:9000", false}, // ports ignored
+		{"a.local", "b.local", true},
+		{"a.local", "b.local:8443", true},
+		{"a.local", "b c.local", false}, // unusable override is no override
+		{"a.local", "b,c.local", false},
+	}
+	for _, tt := range tests {
+		route := utils.ProxyRouteConfig{Host: tt.host, TunneledHost: tt.tunneledHost}
+		if got := tunnelHostOverridden(route); got != tt.want {
+			t.Errorf("tunnelHostOverridden(%q, %q) = %v, want %v", tt.host, tt.tunneledHost, got, tt.want)
+		}
+	}
+}

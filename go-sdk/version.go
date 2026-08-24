@@ -1,4 +1,4 @@
 package cosmossdk
 
 // Version is the SDK version, synced with Cosmos Server at build time.
-const Version = "0.23.0-unstable010"
+const Version = "0.23.0-unstable011"

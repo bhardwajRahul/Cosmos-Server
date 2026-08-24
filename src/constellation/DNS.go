@@ -200,6 +200,12 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			utils.Error("[constellation] Failed to get current device IP for DNS handling", err)
 		} else {
 			tunneled := tunneledHostnames()
+			// an overridden TunneledHost is absent from GetAllHostnames (the exit
+			// serves it, not this node) — add it so the origin answers it with the
+			// load balancer IPs instead of forwarding the query upstream
+			for host := range tunneled {
+				hostnames = append(hostnames, host)
+			}
 			for _, q := range r.Question {
 				utils.Debug("DNS Question " + q.Name)
 				if !isAddrQuery(q) {
