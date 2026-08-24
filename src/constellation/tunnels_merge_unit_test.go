@@ -176,3 +176,24 @@ func TestUnitMergeTunnelHeartbeatsIgnoresUnnamedAdvertiser(t *testing.T) {
 		}
 	}
 }
+
+// Serving tunnels is LB-only — even _ANY_ routes must not land on a
+// non-load-balancer, while an LB merges them as before.
+func TestUnitTunnelsForNodeGatesOnLoadBalancer(t *testing.T) {
+	setupTestEnv(t, func(cfg *utils.Config) {
+		cfg.ConstellationConfig.ThisDeviceName = "node-a"
+	})
+	heartbeats := []NodeHeartbeat{
+		tunnelAdvertiser("node_b", "round_robin", false, false, 10*time.Second),
+	}
+
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5"})
+	if got := tunnelsForNode(heartbeats, "node-a"); len(got) != 0 {
+		t.Errorf("non-LB node serves %d tunnels, want 0", len(got))
+	}
+
+	seedDeviceCache(t, utils.ConstellationDevice{DeviceName: "node-a", IP: "192.168.201.5", IsLoadBalancer: true})
+	if got := tunnelsForNode(heartbeats, "node-a"); len(got) != 1 {
+		t.Errorf("LB node serves %d tunnels, want 1", len(got))
+	}
+}

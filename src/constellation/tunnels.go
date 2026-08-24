@@ -642,6 +642,15 @@ func mergeTunnelHeartbeats(heartbeats []NodeHeartbeat, currentDeviceName string)
 	return tunnels
 }
 
+// tunnelsForNode gates serving on load-balancer status: only LBs serve tunnels,
+func tunnelsForNode(heartbeats []NodeHeartbeat, currentDeviceName string) []utils.ConstellationTunnel {
+	isLB, err := GetCurrentDeviceIsLoadbalancer()
+	if err != nil || !isLB {
+		return []utils.ConstellationTunnel{}
+	}
+	return mergeTunnelHeartbeats(heartbeats, currentDeviceName)
+}
+
 func UpdateLocalTunnelCache() {
 	if IsConstellationStandalone() {
 		return
@@ -707,7 +716,7 @@ func UpdateLocalTunnelCache() {
 	// every node keeps the cluster DNS map, even non load balancers
 	setClusterDNS(buildClusterDNS(heartbeats, loadBalancerIPs()))
 
-	tunnels := mergeTunnelHeartbeats(heartbeats, currentDeviceName)
+	tunnels := tunnelsForNode(heartbeats, currentDeviceName)
 
 	// Compare old and new cache using sorted copies for consistent comparison
 	sortTunnelsForComparison := func(t []utils.ConstellationTunnel) []utils.ConstellationTunnel {
@@ -743,16 +752,6 @@ func GetLocalTunnelCache() []utils.ConstellationTunnel {
 	}
 
 	if IsConstellationStandalone() {
-		return []utils.ConstellationTunnel{}
-	}
-
-	isLB, err := GetCurrentDeviceIsLoadbalancer()
-	if err != nil {
-		utils.Debug("[constellation] Failed to get current device load balancer status for tunnel cache retrieval " + err.Error())
-		return []utils.ConstellationTunnel{}
-	}
-
-	if !isLB {
 		return []utils.ConstellationTunnel{}
 	}
 
