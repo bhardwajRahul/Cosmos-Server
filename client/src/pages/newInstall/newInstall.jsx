@@ -150,36 +150,6 @@ const NewInstall = () => {
             }
         },
         {
-            label: t('newInstall.dbTitle'),
-            component:  <Stack item xs={12} spacing={2}>
-                <div>
-                <QuestionCircleOutlined /> {t('newInstall.dbText')}
-                </div>
-                {status && (status.database ?
-                <Alert severity="success">
-                    {t('newInstall.dbConnected')}
-                </Alert> :
-                <Alert severity="error">
-                    {t('newInstall.dbNotConnected')}
-                </Alert>)}
-                {(status && status.database) ? (
-                    <div>
-                        <center>
-                            <CheckCircleOutlined 
-                                style={{ fontSize: '30px', color: '#52c41a' }}
-                            />
-                        </center>
-                    </div>
-                ) : (<>
-                <div>
-                    <center><CircularProgress color="inherit" /></center>
-                </div></>)}
-            </Stack>,
-            nextButtonLabel: () => {
-                return (status && status.database) ? t('global.next') : '';
-            }
-        },
-        {
             label: t('newInstall.httpsTitle'),
             component: (<Stack item xs={12} spacing={2}>
             <QuestionCircleOutlined /> <Trans i18nKey="newInstall.httpsText" />
@@ -238,7 +208,7 @@ const NewInstall = () => {
                         if(res.status == "OK") {
                             setStatus({ success: true });
                             setHostname((values.HTTPSCertificateMode == "DISABLED" ? "http://" : "https://") + values.Hostname);
-                            setActiveStep(4);
+                            setActiveStep(3);
                         }
                         return res;
                     } catch (error) {
@@ -412,7 +382,7 @@ const NewInstall = () => {
                             email: values.email,
                         }).then((res) => {
                             setStatus({ success: true });
-                            setActiveStep(5);
+                            setActiveStep(4);
                         }).catch((error) => {
                             setStatus({ success: false });
                             setErrors({ submit: error.message });

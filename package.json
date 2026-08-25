@@ -1,6 +1,6 @@
 {
   "name": "cosmos-server",
-  "version": "0.23.0-unstable012",
+  "version": "0.23.0-unstable013",
   "description": "",
   "main": "test-server.js",
   "bugs": {
