@@ -187,6 +187,17 @@ func API_NATSStatus(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if req.Method == "GET" {
+		if IsClientNode() {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "OK",
+				"data": map[string]interface{}{
+					"role":          "client",
+					"nebulaStarted": NebulaStarted.Load(),
+					"clientSynced":  IsClientSynced(),
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "OK",
 			"data":   GetNATSStatus(),
@@ -212,7 +223,12 @@ func API_Ping(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if(req.Method == "GET") {
-		isConnected := PingNATSClient()
+		isConnected := false
+		if IsClientNode() {
+			isConnected = NebulaStarted.Load() && IsClientSynced()
+		} else {
+			isConnected = PingNATSClient()
+		}
 		
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "OK",

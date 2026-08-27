@@ -172,7 +172,11 @@ func Init() {
 	utils.IsConstellationIP = IsConstellationIP
 
 	// every user/device write in the product goes through here from now on
-	utils.SetPublishOpHook(publishOp)
+	if IsClientNode() {
+		utils.SetPublishOpHook(nil)
+	} else {
+		utils.SetPublishOpHook(publishOp)
+	}
 	utils.GetConstellationTunnelRoutes = getConstellationTunnelRoutes
 	utils.PublishRolesOp = func(roles map[utils.Role]utils.RoleConfig) error {
 		return PublishDomainOp(DomainRoles, roles)
@@ -212,6 +216,14 @@ func Init() {
 			return
 		}
 	
+		// client node: no NATS/DNS, just sync the device list
+		if IsClientNode() {
+			go StartClientDeviceSync()
+			go InitPingLighthouses()
+			utils.Log("Constellation module initialized (client mode)")
+			return
+		}
+
 		go InitDNS()
 		go StartNATS()
 		

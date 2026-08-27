@@ -180,7 +180,8 @@ export const ConstellationVPN = ({ freeVersion }) => {
 
   // whole dependency chain healthy — a successful ping with a broken chain is
   // only a degraded connection (non-admins have no natsInfo: assume healthy)
-  const chainOk = !natsInfo || (natsInfo.nebulaStarted && natsInfo.serverRunning && natsInfo.clientConnected
+  const isClientNode = !!natsInfo && natsInfo.role === 'client';
+  const chainOk = !natsInfo || isClientNode || (natsInfo.nebulaStarted && natsInfo.serverRunning && natsInfo.clientConnected
     && (natsInfo.role !== 'agent' || natsInfo.managerLinkUp)
     && natsInfo.jetstreamReady && natsInfo.kvNodesReady);
 
@@ -299,7 +300,7 @@ export const ConstellationVPN = ({ freeVersion }) => {
                 <Typography variant="caption" color="textSecondary">{t('mgmt.constellation.nats.loading')}</Typography>
               </Stack>
             )}
-            {constellationEnabled && isAdmin && natsInfo && (() => {
+            {constellationEnabled && isAdmin && natsInfo && !isClientNode && (() => {
               const isAgentNode = natsInfo.role === 'agent';
               // dependency chain: each step only works if the previous ones do,
               // so the first red dot is where the stack actually broke
