@@ -1,3 +1,12 @@
+## Version 0.23.02
+ - Hardened RClone /about path
+ - Hardened get config path
+ - Fix temperature reading when there's a warning (Thanks @BetterAndBetterII)
+ - Fix xram/swap shown under disks (Thanks @madejackson)
+
+## Version 0.23.01
+ - Allow client servers in Constellation
+
 ## Version 0.23.00
  - Remove Lungo, use SQLite instead
  - Remove MongoDB use SQLite / Postgres instead 
