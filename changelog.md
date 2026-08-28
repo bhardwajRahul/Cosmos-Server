@@ -1,6 +1,9 @@
 ## Version 0.23.02
  - Hardened RClone /about path
- - Hardened get config path
+ - Hardened set/get config path
+ - Hardened Update system
+ - Hardened Invite system
+ - Fix issue with App Gate not checking 2FA consistently 
  - Fix temperature reading when there's a warning (Thanks @BetterAndBetterII)
  - Fix xram/swap shown under disks (Thanks @madejackson)
 
