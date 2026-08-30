@@ -1,3 +1,6 @@
+## Version 0.23.04
+ - Allow terraform to remove Constellation managers
+
 ## Version 0.23.03
  - Update NATS to v2.14.6 (server) / v1.53.1 (client)
  - Update Go to 1.26
